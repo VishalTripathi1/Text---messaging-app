@@ -1,0 +1,57 @@
+package com.messaging.presentation.screen.chat
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.messaging.domain.entity.Chat
+import com.messaging.domain.repository.ChatRepository
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+import javax.inject.Inject
+
+/**
+ * ChatListViewModel - Manages the Chat Dashboard and connects WebSocket
+ */
+@HiltViewModel
+class ChatListViewModel @Inject constructor(
+    private val chatRepository: ChatRepository
+) : ViewModel() {
+
+    val chats: StateFlow<List<Chat>> = chatRepository.getChatsFlow()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val isConnected: StateFlow<Boolean> = chatRepository.observeWebSocketConnection()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    private val _isSyncing = MutableStateFlow(false)
+    val isSyncing: StateFlow<Boolean> = _isSyncing
+
+    init {
+        connectWebSocket()
+        syncChats()
+    }
+
+    fun syncChats() {
+        viewModelScope.launch {
+            _isSyncing.value = true
+            chatRepository.syncChats()
+            _isSyncing.value = false
+        }
+    }
+
+    fun connectWebSocket() {
+        chatRepository.connectWebSocket()
+    }
+
+    fun pinChat(chatId: Long, pinned: Boolean) {
+        viewModelScope.launch {
+            chatRepository.togglePinChat(chatId, pinned)
+        }
+    }
+
+    fun archiveChat(chatId: Long, archived: Boolean) {
+        viewModelScope.launch {
+            chatRepository.toggleArchiveChat(chatId, archived)
+        }
+    }
+}

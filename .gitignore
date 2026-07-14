@@ -1,0 +1,59 @@
+# .gitignore for Messaging Application
+
+# Backend
+messaging-backend/target/
+messaging-backend/.classpath
+messaging-backend/.project
+messaging-backend/.settings/
+messaging-backend/*.iml
+messaging-backend/.idea/
+messaging-backend/logs/
+messaging-backend/*.log
+messaging-backend/volume/uploads/*
+!messaging-backend/volume/uploads/.gitkeep
+
+# Android
+messaging-android/.gradle/
+messaging-android/.idea/
+messaging-android/build/
+messaging-android/app/build/
+messaging-android/*.iml
+messaging-android/local.properties
+messaging-android/.DS_Store
+
+# General
+.DS_Store
+*.class
+*.jar
+*.war
+*.sar
+*.zip
+*.tar.gz
+.tmp/
+.temp/
+*.pid
+.env
+.env.local
+
+# IDE
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Database
+*.sqlite
+*.sqlite-journal
+*.db
+
+# OS
+Thumbs.db
+.AppleDouble
+.LSOverride
+
+# Node (if any frontend)
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Docker
+.dockerignore
