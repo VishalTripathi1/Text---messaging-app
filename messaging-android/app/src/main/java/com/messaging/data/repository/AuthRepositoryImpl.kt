@@ -65,6 +65,17 @@ class AuthRepositoryImpl @Inject constructor(
 
     private fun parseErrorMessage(errorBody: String?): String? {
         if (errorBody.isNullOrBlank()) return null
+        if (errorBody.contains("<!DOCTYPE html", ignoreCase = true) || errorBody.contains("<html", ignoreCase = true)) {
+            return if (errorBody.contains("502")) {
+                "Server Connection Error (502 Bad Gateway). Please ensure the backend server is running."
+            } else if (errorBody.contains("504")) {
+                "Server Gateway Timeout (504). Please try again."
+            } else if (errorBody.contains("404")) {
+                "Requested resource not found (404)."
+            } else {
+                "Server returned an error. Please try again."
+            }
+        }
         return try {
             val json = org.json.JSONObject(errorBody)
             if (json.has("message")) json.getString("message") else errorBody
