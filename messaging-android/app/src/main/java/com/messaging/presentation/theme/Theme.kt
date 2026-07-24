@@ -10,36 +10,42 @@ import androidx.compose.ui.platform.LocalConfiguration
 
 private val DarkColorScheme = darkColorScheme(
     primary = PrimaryColor,
-    onPrimary = TertiaryColor,
+    onPrimary = androidx.compose.ui.graphics.Color.White,
     primaryContainer = PrimaryVariant,
-    onPrimaryContainer = TertiaryColor,
+    onPrimaryContainer = androidx.compose.ui.graphics.Color.White,
     secondary = SecondaryColor,
-    onSecondary = BackgroundDark,
+    onSecondary = androidx.compose.ui.graphics.Color.White,
     tertiary = TertiaryColor,
-    onTertiary = TextPrimary,
+    onTertiary = androidx.compose.ui.graphics.Color.White,
     error = ErrorColor,
-    onError = BackgroundLight,
+    onError = androidx.compose.ui.graphics.Color.White,
     background = BackgroundDark,
-    onBackground = TextPrimary,
+    onBackground = TextPrimaryDark,
     surface = SurfaceDark,
-    onSurface = TextPrimary
+    onSurface = TextPrimaryDark,
+    surfaceVariant = SurfaceVariantDark,
+    onSurfaceVariant = TextSecondaryDark,
+    outline = SurfaceVariantDark
 )
 
 private val LightColorScheme = lightColorScheme(
     primary = PrimaryColor,
-    onPrimary = BackgroundLight,
-    primaryContainer = PrimaryVariant,
-    onPrimaryContainer = BackgroundLight,
+    onPrimary = androidx.compose.ui.graphics.Color.White,
+    primaryContainer = SurfaceVariantLight,
+    onPrimaryContainer = PrimaryVariant,
     secondary = SecondaryColor,
-    onSecondary = BackgroundLight,
+    onSecondary = androidx.compose.ui.graphics.Color.White,
     tertiary = TertiaryColor,
-    onTertiary = TextPrimary,
+    onTertiary = androidx.compose.ui.graphics.Color.White,
     error = ErrorColor,
-    onError = BackgroundLight,
+    onError = androidx.compose.ui.graphics.Color.White,
     background = BackgroundLight,
-    onBackground = TextPrimary,
+    onBackground = TextPrimaryLight,
     surface = SurfaceLight,
-    onSurface = TextPrimary
+    onSurface = TextPrimaryLight,
+    surfaceVariant = SurfaceVariantLight,
+    onSurfaceVariant = TextSecondaryLight,
+    outline = SurfaceVariantLight
 )
 
 @Composable

@@ -15,13 +15,20 @@ import com.messaging.presentation.screen.settings.SettingsScreen
 import com.messaging.presentation.screen.search.SearchScreen
 import com.messaging.presentation.screen.group.CreateGroupScreen
 
+import com.messaging.presentation.screen.splash.SplashScreen
+import com.messaging.presentation.screen.auth.LoginScreen
+
 /**
  * NavGraph - Navigation structure setup
  */
 @Composable
 fun NavGraph(navController: NavHostController) {
-    NavHost(navController = navController, startDestination = Screen.Login.route) {
+    NavHost(navController = navController, startDestination = Screen.Splash.route) {
         
+        composable(Screen.Splash.route) {
+            SplashScreen(navController = navController)
+        }
+
         composable(Screen.Login.route) {
             LoginScreen(navController = navController)
         }

@@ -1,5 +1,6 @@
 package com.messaging.presentation.screen.chat
 
+import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -15,6 +16,8 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * ChatViewModel - Controls conversation events, message logs, and typing notifications
@@ -50,9 +53,18 @@ class ChatViewModel @Inject constructor(
     var currentUserId: Long = 0
 
     init {
+        chatRepository.connectWebSocket()
         viewModelScope.launch {
             currentUserId = tokenManager.userId.firstOrNull() ?: 0
-            val chat = chatDao.getChatById(chatId)
+            var chat = withContext(Dispatchers.IO) {
+                chatDao.getChatById(chatId)
+            }
+            if (chat == null && chatId > 0) {
+                chatRepository.syncChats()
+                chat = withContext(Dispatchers.IO) {
+                    chatDao.getChatById(chatId)
+                }
+            }
             if (chat != null) {
                 if (chat.isGroup) {
                     otherUserId = null
@@ -65,7 +77,7 @@ class ChatViewModel @Inject constructor(
                     
                     launch {
                         webSocketClient.incomingMessages
-                            .filter { it.type == "TYPING" && it.chatId == chatId && it.senderId == chat.otherUserId }
+                            .filter { it.type == "TYPING" && it.chatId == chatId && it.senderId == chat?.otherUserId }
                             .collect { wsMessage ->
                                 try {
                                     val jsonStr = gson.toJson(wsMessage.payload)
@@ -113,37 +125,21 @@ class ChatViewModel @Inject constructor(
             chatRepository.uploadAttachment(fileBytes, fileName, mimeType)
                 .onSuccess { responseMap ->
                     val filePath = responseMap["filePath"] as? String ?: ""
-                    val size = (responseMap["fileSize"] as? Number)?.toLong() ?: 0L
+                    val size = (responseMap["fileSize"] as? Number)?.toLong() ?: fileBytes.size.toLong()
                     
-                    val isGroup = chatId < 0
-                    val actualGroupId = if (isGroup) -chatId else null
-                    val actualChatId = if (isGroup) null else chatId
-                    val actualRecipientId = if (isGroup) null else otherUserId
-                    
-                    val request = MessageRequest(
-                        chatId = actualChatId,
-                        groupId = actualGroupId,
-                        recipientId = actualRecipientId,
-                        messageType = type,
-                        messageText = "[Attachment: $fileName]",
+                    chatRepository.sendMessage(
+                        recipientId = otherUserId,
+                        chatId = chatId,
+                        text = "[Attachment: $fileName]",
+                        type = type,
                         attachmentPath = filePath,
                         attachmentFileName = fileName,
                         attachmentFileType = mimeType,
                         attachmentFileSize = size
                     )
-                    
-                    val wsMessage = WebSocketMessage(
-                        type = "CHAT_MESSAGE",
-                        recipientId = actualRecipientId,
-                        chatId = actualChatId,
-                        groupId = actualGroupId,
-                        payload = request
-                    )
-                    
-                    webSocketClient.sendMessage(wsMessage)
                 }
                 .onFailure { t ->
-                    t.printStackTrace()
+                    Log.e("ChatViewModel", "Failed to upload attachment", t)
                 }
         }
     }

@@ -28,4 +28,7 @@ interface ChatDao {
 
     @Query("DELETE FROM chats")
     fun deleteAllChats()
+    
+
+   
 }

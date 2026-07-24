@@ -19,7 +19,16 @@ interface ChatRepository {
     
     suspend fun getOrCreateChat(recipientId: Long): Result<Chat>
     
-    suspend fun sendMessage(recipientId: Long?, chatId: Long?, text: String, type: String): Result<Unit>
+    suspend fun sendMessage(
+        recipientId: Long?,
+        chatId: Long?,
+        text: String,
+        type: String,
+        attachmentPath: String? = null,
+        attachmentFileName: String? = null,
+        attachmentFileType: String? = null,
+        attachmentFileSize: Long? = null
+    ): Result<Unit>
     
     suspend fun markChatAsRead(chatId: Long): Result<Unit>
     

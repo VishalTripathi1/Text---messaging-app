@@ -62,7 +62,7 @@ fun ChatScreen(
     }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
+        contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
             val contentResolver = context.contentResolver
@@ -217,7 +217,7 @@ fun ChatScreen(
                     .imePadding(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = { filePickerLauncher.launch("*/*") }) {
+                IconButton(onClick = { filePickerLauncher.launch(arrayOf("*/*")) }) {
                     Icon(
                         imageVector = Icons.Default.AttachFile,
                         contentDescription = "Attach File",
@@ -301,7 +301,11 @@ fun MessageBubble(
         ) {
             Column {
                 if (message.attachmentPath != null) {
-                    AttachmentCard(message = message, isOwnMessage = isOwnMessage)
+                    AttachmentCard(
+                        message = message,
+                        isOwnMessage = isOwnMessage,
+                        onLongClick = { showOptions = true }
+                    )
                     Spacer(modifier = Modifier.height(4.dp))
                 }
 
@@ -362,6 +366,14 @@ fun MessageBubble(
                         when (message.deliveryStatus) {
                             "PENDING" -> {
                                 Icon(
+                                    imageVector = Icons.Default.Schedule,
+                                    contentDescription = "Pending",
+                                    tint = textColor.copy(alpha = 0.6f),
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
+                            "SENT" -> {
+                                Icon(
                                     imageVector = Icons.Default.Check,
                                     contentDescription = "Sent",
                                     tint = textColor.copy(alpha = 0.6f),
@@ -389,13 +401,13 @@ fun MessageBubble(
                                     Icon(
                                         imageVector = Icons.Default.Check,
                                         contentDescription = "Read",
-                                        tint = Color(0xFF0288D1),
+                                        tint = Color(0xFF06B6D4),
                                         modifier = Modifier.size(12.dp)
                                     )
                                     Icon(
                                         imageVector = Icons.Default.Check,
                                         contentDescription = "Read",
-                                        tint = Color(0xFF0288D1),
+                                        tint = Color(0xFF06B6D4),
                                         modifier = Modifier.size(12.dp).offset(x = (-4).dp)
                                     )
                                 }
@@ -495,10 +507,12 @@ fun MessageBubble(
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun AttachmentCard(
     message: Message,
-    isOwnMessage: Boolean
+    isOwnMessage: Boolean,
+    onLongClick: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val cardColor = if (isOwnMessage) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
@@ -509,18 +523,39 @@ fun AttachmentCard(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
-            .clickable {
-                try {
-                    val pathEncoded = java.net.URLEncoder.encode(message.attachmentPath ?: "", "UTF-8")
-                    val intent = android.content.Intent(
-                        android.content.Intent.ACTION_VIEW,
-                        android.net.Uri.parse("http://10.0.2.2:8080/v1/attachments/download?path=$pathEncoded")
-                    )
-                    context.startActivity(intent)
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            },
+            .combinedClickable(
+                onClick = {
+                    try {
+                        val rawPath = message.attachmentPath ?: ""
+                        val fullUrl = if (rawPath.startsWith("http")) {
+                            rawPath
+                        } else {
+                            val path = if (rawPath.startsWith("/")) rawPath else "/$rawPath"
+                            "${com.messaging.util.Constants.ATTACHMENT_BASE_URL}$path"
+                        }
+                        val mimeType = message.attachmentFileType ?: "application/octet-stream"
+                        val uri = android.net.Uri.parse(fullUrl)
+                        
+                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                            setDataAndType(uri, mimeType)
+                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        
+                        try {
+                            context.startActivity(intent)
+                        } catch (e: Exception) {
+                            val browserIntent = android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                uri
+                            )
+                            context.startActivity(browserIntent)
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                },
+                onLongClick = { onLongClick?.invoke() }
+            ),
         shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(containerColor = cardColor)
     ) {

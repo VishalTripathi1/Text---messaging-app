@@ -2,6 +2,7 @@ package com.messaging.data.repository
 
 import android.util.Log
 import com.messaging.data.datasource.remote.ChatApiService
+import com.messaging.data.model.request.ContactSyncRequest
 import com.messaging.data.model.request.UserProfileUpdateRequest
 import com.messaging.data.model.request.UserSettingsUpdateRequest
 import com.messaging.data.model.response.UserResponse
@@ -30,6 +31,19 @@ class UserRepositoryImpl @Inject constructor(
             }
         }.onFailure {
             Log.e("UserRepositoryImpl", "Error fetching current user", it)
+        }
+    }
+
+    override suspend fun syncContacts(phoneNumbers: List<String>): Result<List<UserResponse>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val response = chatApiService.syncContacts(ContactSyncRequest(phoneNumbers))
+            if (response.isSuccessful && response.body() != null) {
+                response.body()!!
+            } else {
+                throw Exception("Failed to sync contacts: ${response.message()}")
+            }
+        }.onFailure {
+            Log.e("UserRepositoryImpl", "Error syncing contacts", it)
         }
     }
 

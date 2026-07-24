@@ -11,6 +11,9 @@ import com.google.firebase.messaging.FirebaseMessaging
 import com.messaging.domain.repository.ChatRepository
 import com.messaging.presentation.navigation.NavGraph
 import com.messaging.presentation.theme.MessagingTheme
+import com.messaging.util.TokenManager
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -25,6 +28,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var chatRepository: ChatRepository
 
+    @Inject
+    lateinit var tokenManager: TokenManager
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -37,7 +43,13 @@ class MainActivity : ComponentActivity() {
         registerFcmToken()
 
         setContent {
-            MessagingTheme {
+            val themeSetting by tokenManager.theme.collectAsState(initial = "SYSTEM")
+            val useDarkTheme = when (themeSetting) {
+                "DARK" -> true
+                "LIGHT" -> false
+                else -> androidx.compose.foundation.isSystemInDarkTheme()
+            }
+            MessagingTheme(darkTheme = useDarkTheme) {
                 val navController = rememberNavController()
                 NavGraph(navController = navController)
             }

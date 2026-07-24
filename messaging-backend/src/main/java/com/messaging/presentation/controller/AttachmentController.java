@@ -39,8 +39,9 @@ public class AttachmentController {
 
     @PostMapping("/upload")
     public ResponseEntity<Map<String, Object>> uploadFile(@RequestParam("file") MultipartFile file) {
-        String originalFileName = StringUtils.cleanPath(file.getOriginalFilename());
-        String uniqueFileName = UUID.randomUUID().toString() + "_" + originalFileName;
+        String rawFileName = StringUtils.cleanPath(file.getOriginalFilename());
+        String safeFileName = rawFileName.replaceAll("[^a-zA-Z0-9\\.\\-_]", "_");
+        String uniqueFileName = UUID.randomUUID().toString() + "_" + safeFileName;
         
         try {
             Path targetLocation = this.fileStorageLocation.resolve(uniqueFileName);
@@ -50,7 +51,7 @@ public class AttachmentController {
 
             Map<String, Object> response = new HashMap<>();
             response.put("filePath", downloadUri);
-            response.put("fileName", originalFileName);
+            response.put("fileName", rawFileName);
             response.put("fileType", file.getContentType());
             response.put("fileSize", file.getSize());
 
@@ -63,10 +64,15 @@ public class AttachmentController {
     @GetMapping("/download/{fileName:.+}")
     public ResponseEntity<Resource> downloadFile(@PathVariable String fileName) {
         try {
+            String decodedName = java.net.URLDecoder.decode(fileName, java.nio.charset.StandardCharsets.UTF_8);
             Path filePath = this.fileStorageLocation.resolve(fileName).normalize();
+            if (!Files.exists(filePath)) {
+                filePath = this.fileStorageLocation.resolve(decodedName).normalize();
+            }
+            
             Resource resource = new UrlResource(filePath.toUri());
             
-            if (resource.exists()) {
+            if (resource.exists() && resource.isReadable()) {
                 String contentType = Files.probeContentType(filePath);
                 if (contentType == null) {
                     contentType = "application/octet-stream";

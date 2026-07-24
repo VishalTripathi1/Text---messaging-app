@@ -4,6 +4,7 @@ package com.messaging.presentation.navigation
  * Screen - Navigation route definitions
  */
 sealed class Screen(val route: String) {
+    object Splash : Screen("splash")
     object Login : Screen("login")
     object Register : Screen("register")
     object ChatList : Screen("chat_list")

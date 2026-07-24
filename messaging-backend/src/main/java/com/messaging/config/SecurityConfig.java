@@ -46,6 +46,7 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST, "/v1/auth/refresh-token").permitAll()
                 .requestMatchers(HttpMethod.POST, "/v1/auth/validate-token").permitAll()
                 .requestMatchers("/v1/health").permitAll()
+                .requestMatchers("/v1/attachments/**").permitAll()
                 .requestMatchers("/swagger-ui/**", "/v3/api-docs/**", "/swagger-ui.html").permitAll()
                 .requestMatchers("/ws/**").permitAll()
                 .anyRequest().authenticated()

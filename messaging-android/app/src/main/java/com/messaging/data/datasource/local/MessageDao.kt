@@ -31,4 +31,22 @@ interface MessageDao {
 
     @Query("DELETE FROM messages WHERE chatId = :chatId")
     fun deleteMessagesForChat(chatId: Long)
+
+    @Query("DELETE FROM messages WHERE id = :id")
+    fun deleteMessageById(id: Long)
+
+    @Query("UPDATE messages SET messageText = :newText, isEdited = 1 WHERE id = :messageId")
+    fun updateMessageText(messageId: Long, newText: String)
+
+    @Query("UPDATE messages SET isDeleted = 1, messageText = 'This message was deleted' WHERE id = :messageId")
+    fun markMessageAsDeleted(messageId: Long)
+
+    @Query("UPDATE messages SET deliveryStatus = 'READ' WHERE chatId = :chatId AND deliveryStatus != 'READ'")
+    fun markChatMessagesAsRead(chatId: Long)
+
+    @Query("SELECT * FROM messages WHERE chatId = :chatId ORDER BY createdAt DESC LIMIT 1")
+    fun getLatestMessageForChat(chatId: Long): MessageEntity?
+
+    @Query("SELECT * FROM messages WHERE groupId = :groupId ORDER BY createdAt DESC LIMIT 1")
+    fun getLatestMessageForGroup(groupId: Long): MessageEntity?
 }

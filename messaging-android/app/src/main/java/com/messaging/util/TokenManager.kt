@@ -20,6 +20,7 @@ class TokenManager(private val context: Context) {
         private val REFRESH_TOKEN_KEY = stringPreferencesKey("refresh_token")
         private val USER_ID_KEY = longPreferencesKey("user_id")
         private val USERNAME_KEY = stringPreferencesKey("username")
+        private val THEME_KEY = stringPreferencesKey("theme")
     }
 
     suspend fun saveTokens(accessToken: String, refreshToken: String, userId: Long, username: String) {
@@ -28,6 +29,12 @@ class TokenManager(private val context: Context) {
             preferences[REFRESH_TOKEN_KEY] = refreshToken
             preferences[USER_ID_KEY] = userId
             preferences[USERNAME_KEY] = username
+        }
+    }
+
+    suspend fun saveTheme(theme: String) {
+        context.dataStore.edit { preferences ->
+            preferences[THEME_KEY] = theme
         }
     }
 
@@ -47,12 +54,17 @@ class TokenManager(private val context: Context) {
         preferences[USERNAME_KEY]
     }
 
+    val theme: Flow<String?> = context.dataStore.data.map { preferences ->
+        preferences[THEME_KEY]
+    }
+
     suspend fun clearTokens() {
         context.dataStore.edit { preferences ->
             preferences.remove(ACCESS_TOKEN_KEY)
             preferences.remove(REFRESH_TOKEN_KEY)
             preferences.remove(USER_ID_KEY)
             preferences.remove(USERNAME_KEY)
+            preferences.remove(THEME_KEY)
         }
     }
 }

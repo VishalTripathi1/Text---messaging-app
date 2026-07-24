@@ -32,7 +32,7 @@ class AuthRepositoryImpl @Inject constructor(
                 )
                 Result.success(authResponse)
             } else {
-                Result.failure(Exception(response.errorBody()?.string() ?: "Registration failed"))
+                Result.failure(Exception(parseErrorMessage(response.errorBody()?.string()) ?: "Registration failed"))
             }
         } catch (e: IOException) {
             Result.failure(e)
@@ -54,12 +54,22 @@ class AuthRepositoryImpl @Inject constructor(
                 )
                 Result.success(authResponse)
             } else {
-                Result.failure(Exception(response.errorBody()?.string() ?: "Login failed"))
+                Result.failure(Exception(parseErrorMessage(response.errorBody()?.string()) ?: "Login failed"))
             }
         } catch (e: IOException) {
             Result.failure(e)
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    private fun parseErrorMessage(errorBody: String?): String? {
+        if (errorBody.isNullOrBlank()) return null
+        return try {
+            val json = org.json.JSONObject(errorBody)
+            if (json.has("message")) json.getString("message") else errorBody
+        } catch (e: Exception) {
+            errorBody
         }
     }
 

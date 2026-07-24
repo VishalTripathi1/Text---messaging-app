@@ -4,10 +4,13 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.messaging.data.model.response.UserResponse
 import com.messaging.data.model.response.UserSettingsResponse
+import com.messaging.domain.repository.AuthRepository
 import com.messaging.domain.repository.UserRepository
+import com.messaging.util.TokenManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -16,7 +19,9 @@ import javax.inject.Inject
  */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
-    private val userRepository: UserRepository
+    private val userRepository: UserRepository,
+    private val authRepository: AuthRepository,
+    private val tokenManager: TokenManager
 ) : ViewModel() {
 
     private val _profile = MutableStateFlow<UserResponse?>(null)
@@ -27,6 +32,12 @@ class SettingsViewModel @Inject constructor(
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading
+
+    private val _isLoggingOut = MutableStateFlow(false)
+    val isLoggingOut: StateFlow<Boolean> = _isLoggingOut.asStateFlow()
+
+    private val _isLoggedOut = MutableStateFlow(false)
+    val isLoggedOut: StateFlow<Boolean> = _isLoggedOut.asStateFlow()
 
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage
@@ -46,13 +57,21 @@ class SettingsViewModel @Inject constructor(
                 .onSuccess { _profile.value = it }
                 .onFailure { _errorMessage.value = it.message }
             userRepository.getSettings()
-                .onSuccess { _settings.value = it }
+                .onSuccess { settingsResponse ->
+                    _settings.value = settingsResponse
+                    settingsResponse.theme?.let {
+                        tokenManager.saveTheme(it)
+                    }
+                }
                 .onFailure { _errorMessage.value = it.message }
             _isLoading.value = false
         }
     }
 
     fun updateTheme(theme: String) {
+        viewModelScope.launch {
+            tokenManager.saveTheme(theme)
+        }
         updateSetting(theme = theme)
     }
 
@@ -100,6 +119,15 @@ class SettingsViewModel @Inject constructor(
                     _successMessage.value = "Setting updated"
                 }
                 .onFailure { _errorMessage.value = it.message ?: "Update failed" }
+        }
+    }
+
+    fun logout() {
+        viewModelScope.launch {
+            _isLoggingOut.value = true
+            authRepository.logout()
+            _isLoggingOut.value = false
+            _isLoggedOut.value = true
         }
     }
 

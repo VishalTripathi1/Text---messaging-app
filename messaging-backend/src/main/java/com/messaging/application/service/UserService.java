@@ -5,6 +5,8 @@ import com.messaging.domain.dto.request.UserSettingsUpdateRequest;
 import com.messaging.domain.dto.response.UserResponse;
 import com.messaging.domain.dto.response.UserSettingsResponse;
 
+import com.messaging.domain.dto.request.ContactSyncRequest;
+
 import java.util.List;
 
 /**
@@ -13,6 +15,7 @@ import java.util.List;
 public interface UserService {
     List<UserResponse> getAllUsers();
     List<UserResponse> searchUsers(String query);
+    List<UserResponse> syncContacts(Long currentUserId, ContactSyncRequest request);
     UserResponse getCurrentUser(Long userId);
     UserResponse updateProfile(Long userId, UserProfileUpdateRequest request);
     UserSettingsResponse getSettings(Long userId);

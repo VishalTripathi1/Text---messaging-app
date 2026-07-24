@@ -10,17 +10,27 @@ import com.messaging.domain.entity.Chat
 import com.messaging.domain.entity.Message
 import com.messaging.domain.entity.Reaction
 import com.messaging.domain.entity.User
+import java.time.Instant
 import java.time.LocalDateTime
+import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
 private val formatter = DateTimeFormatter.ISO_DATE_TIME
 
-fun String.toEpochMillis(): Long {
+fun String?.toEpochMillis(): Long {
+    if (this.isNullOrBlank()) return System.currentTimeMillis()
     return try {
-        LocalDateTime.parse(this, formatter).toInstant(ZoneOffset.UTC).toEpochMilli()
+        Instant.parse(this).toEpochMilli()
     } catch (e: Exception) {
-        System.currentTimeMillis()
+        try {
+            LocalDateTime.parse(this, formatter)
+                .atZone(ZoneId.systemDefault())
+                .toInstant()
+                .toEpochMilli()
+        } catch (e2: Exception) {
+            System.currentTimeMillis()
+        }
     }
 }
 

@@ -8,6 +8,7 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import com.messaging.data.datasource.local.MessageDao
+import com.messaging.data.datasource.local.MessageEntity
 import com.messaging.data.datasource.remote.ChatApiService
 import com.messaging.data.datasource.remote.WebSocketClient
 import com.messaging.data.model.request.DeviceRegisterRequest
@@ -29,6 +30,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -60,14 +62,39 @@ class ChatRepositoryImpl @Inject constructor(
 
     override fun getChatsFlow(): Flow<List<Chat>> {
         return chatDao.getAllChatsFlow().map { entities ->
-            entities.map { it.toDomain() }
-        }
+            entities.map { entity ->
+                val lastText = if (!entity.lastMessageText.isNullOrBlank()) {
+                    entity.lastMessageText
+                } else {
+                    val latestMsg = if (entity.isGroup) {
+                        messageDao.getLatestMessageForGroup(-entity.id)
+                    } else {
+                        messageDao.getLatestMessageForChat(entity.id)
+                    }
+                    latestMsg?.messageText
+                }
+                
+                val lastTime = entity.lastMessageAt ?: run {
+                    val latestMsg = if (entity.isGroup) {
+                        messageDao.getLatestMessageForGroup(-entity.id)
+                    } else {
+                        messageDao.getLatestMessageForChat(entity.id)
+                    }
+                    latestMsg?.createdAt
+                }
+
+                entity.copy(
+                    lastMessageText = lastText,
+                    lastMessageAt = lastTime
+                ).toDomain()
+            }
+        }.flowOn(Dispatchers.IO)
     }
 
     override fun getMessagesFlow(chatId: Long): Flow<List<Message>> {
         return messageDao.getMessagesForChatFlow(chatId).map { entities ->
             entities.map { it.toDomain() }
-        }
+        }.flowOn(Dispatchers.IO)
     }
 
     override suspend fun syncChats(): Result<Unit> = withContext(Dispatchers.IO) {
@@ -135,7 +162,11 @@ class ChatRepositoryImpl @Inject constructor(
         recipientId: Long?,
         chatId: Long?,
         text: String,
-        type: String
+        type: String,
+        attachmentPath: String?,
+        attachmentFileName: String?,
+        attachmentFileType: String?,
+        attachmentFileSize: Long?
     ): Result<Unit> = withContext(Dispatchers.IO) {
         return@withContext try {
             val isGroup = chatId != null && chatId < 0
@@ -143,12 +174,51 @@ class ChatRepositoryImpl @Inject constructor(
             val actualChatId = if (isGroup) null else chatId
             val actualRecipientId = if (isGroup) null else recipientId
 
+            val currentUserId = tokenManager.userId.firstOrNull() ?: 0L
+            val currentUsername = tokenManager.username.firstOrNull() ?: ""
+            val tempMessageId = -System.currentTimeMillis()
+
+            val tempEntity = MessageEntity(
+                id = tempMessageId,
+                chatId = actualChatId,
+                groupId = actualGroupId,
+                senderId = currentUserId,
+                senderUsername = currentUsername,
+                messageText = text,
+                messageType = type,
+                isEdited = false,
+                isDeleted = false,
+                createdAt = System.currentTimeMillis(),
+                deliveryStatus = "PENDING",
+                attachmentPath = attachmentPath,
+                attachmentFileName = attachmentFileName,
+                attachmentFileType = attachmentFileType,
+                attachmentFileSize = attachmentFileSize
+            )
+            messageDao.insertMessage(tempEntity)
+
+            val resolvedChatId = if (actualGroupId != null) -actualGroupId else actualChatId
+            if (resolvedChatId != null) {
+                val chat = chatDao.getChatById(resolvedChatId)
+                if (chat != null) {
+                    chatDao.insertChat(chat.copy(
+                        lastMessageText = text,
+                        lastMessageSenderId = currentUserId,
+                        lastMessageAt = System.currentTimeMillis()
+                    ))
+                }
+            }
+
             val wsRequest = MessageRequest(
                 chatId = actualChatId,
                 groupId = actualGroupId,
                 recipientId = actualRecipientId,
                 messageType = type,
-                messageText = text
+                messageText = text,
+                attachmentPath = attachmentPath,
+                attachmentFileName = attachmentFileName,
+                attachmentFileType = attachmentFileType,
+                attachmentFileSize = attachmentFileSize
             )
             
             val wsMessage = WebSocketMessage(
@@ -163,15 +233,28 @@ class ChatRepositoryImpl @Inject constructor(
             if (sent) {
                 Result.success(Unit)
             } else {
-                if (isGroup) {
-                    Result.failure(Exception("Failed to send group message: WebSocket disconnected"))
-                } else {
-                    val response = chatApiService.getOrCreateChat(recipientId ?: 0)
-                    if (response.isSuccessful && response.body() != null) {
-                        Result.success(Unit)
-                    } else {
-                        Result.failure(Exception("WebSocket is disconnected and fallback failed"))
+                val httpResp = chatApiService.sendHttpMessage(wsRequest)
+                if (httpResp.isSuccessful && httpResp.body() != null) {
+                    val messageResp = httpResp.body()!!
+                    messageDao.deleteMessageById(tempMessageId)
+                    val entity = messageResp.toEntity("DELIVERED")
+                    messageDao.insertMessage(entity)
+                    
+                    val resolvedChatId = if (actualGroupId != null) -actualGroupId else actualChatId
+                    if (resolvedChatId != null) {
+                        val chat = chatDao.getChatById(resolvedChatId)
+                        if (chat != null) {
+                            chatDao.insertChat(chat.copy(
+                                lastMessageText = messageResp.messageText,
+                                lastMessageSenderId = messageResp.senderId,
+                                lastMessageAt = messageResp.createdAt.toEpochMillis()
+                            ))
+                        }
                     }
+                    Result.success(Unit)
+                } else {
+                    messageDao.updateDeliveryStatus(tempMessageId, "FAILED")
+                    Result.failure(Exception("Failed to send message over HTTP"))
                 }
             }
         } catch (e: Exception) {
@@ -256,17 +339,18 @@ class ChatRepositoryImpl @Inject constructor(
                     val response = gson.fromJson(jsonStr, MessageResponse::class.java)
                     
                     val isOutgoing = response.senderId == currentUserId
-                    val deliveryStatus = if (isOutgoing) "DELIVERED" else "READ"
+                    val deliveryStatus = if (isOutgoing) "SENT" else "READ"
                     
                     val entity = response.toEntity(deliveryStatus)
                     messageDao.insertMessage(entity)
 
-                    val resolvedChatId = if (response.groupId != null) -response.groupId!! else response.chatId
+                    val groupId = response.groupId
+                    val resolvedChatId = if (groupId != null) -groupId else response.chatId
                     if (resolvedChatId != null) {
                         var chat = chatDao.getChatById(resolvedChatId)
                         if (chat == null) {
-                            if (response.groupId != null) {
-                                val groupDetailsResp = chatApiService.getGroupDetails(response.groupId!!)
+                            if (groupId != null) {
+                                val groupDetailsResp = chatApiService.getGroupDetails(groupId)
                                 if (groupDetailsResp.isSuccessful && groupDetailsResp.body() != null) {
                                     val groupDetails = groupDetailsResp.body()!!
                                     chat = groupDetails.toEntity()
@@ -320,7 +404,7 @@ class ChatRepositoryImpl @Inject constructor(
                 "READ_RECEIPT" -> {
                     val chatId = wsMessage.chatId
                     if (chatId != null) {
-                        // Mark all messages as read locally
+                        messageDao.markChatMessagesAsRead(chatId)
                     }
                 }
             }
@@ -385,14 +469,22 @@ class ChatRepositoryImpl @Inject constructor(
 
     override suspend fun editMessage(messageId: Long, newText: String): Result<Unit> = withContext(Dispatchers.IO) {
         try {
-            val response = chatApiService.editMessage(messageId, newText)
-            val body = response.body()
-            if (response.isSuccessful && body != null) {
-                messageDao.insertMessage(body.toEntity())
-                Result.success(Unit)
-            } else {
-                Result.failure(Exception("Failed to edit message: ${response.message()}"))
+            messageDao.updateMessageText(messageId, newText)
+            val msgEntity = messageDao.getMessageById(messageId)
+            if (msgEntity?.chatId != null) {
+                val chat = chatDao.getChatById(msgEntity.chatId)
+                if (chat != null) {
+                    chatDao.insertChat(chat.copy(lastMessageText = newText))
+                }
             }
+            if (messageId > 0) {
+                val response = chatApiService.editMessage(messageId, newText)
+                val body = response.body()
+                if (response.isSuccessful && body != null) {
+                    messageDao.insertMessage(body.toEntity())
+                }
+            }
+            Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -400,14 +492,22 @@ class ChatRepositoryImpl @Inject constructor(
 
     override suspend fun deleteMessage(messageId: Long): Result<Unit> = withContext(Dispatchers.IO) {
         try {
-            val response = chatApiService.deleteMessage(messageId)
-            val body = response.body()
-            if (response.isSuccessful && body != null) {
-                messageDao.insertMessage(body.toEntity())
-                Result.success(Unit)
-            } else {
-                Result.failure(Exception("Failed to delete message: ${response.message()}"))
+            messageDao.markMessageAsDeleted(messageId)
+            val msgEntity = messageDao.getMessageById(messageId)
+            if (msgEntity?.chatId != null) {
+                val chat = chatDao.getChatById(msgEntity.chatId)
+                if (chat != null) {
+                    chatDao.insertChat(chat.copy(lastMessageText = "This message was deleted"))
+                }
             }
+            if (messageId > 0) {
+                val response = chatApiService.deleteMessage(messageId)
+                val body = response.body()
+                if (response.isSuccessful && body != null) {
+                    messageDao.insertMessage(body.toEntity())
+                }
+            }
+            Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -415,12 +515,23 @@ class ChatRepositoryImpl @Inject constructor(
 
     override suspend fun addReaction(messageId: Long, reaction: String): Result<Unit> = withContext(Dispatchers.IO) {
         try {
-            val response = chatApiService.addReaction(messageId, reaction)
-            if (response.isSuccessful) {
-                Result.success(Unit)
-            } else {
-                Result.failure(Exception("Failed to add reaction: ${response.message()}"))
+            val currentUserId = tokenManager.userId.firstOrNull() ?: 0L
+            val currentUsername = tokenManager.username.firstOrNull() ?: ""
+            val existingEntity = messageDao.getMessageById(messageId)
+            if (existingEntity != null) {
+                val currentReactions = existingEntity.reactions?.filterNot { it.userId == currentUserId } ?: emptyList()
+                val newReactionObj = com.messaging.domain.entity.Reaction(
+                    userId = currentUserId,
+                    username = currentUsername,
+                    reaction = reaction
+                )
+                val updatedList = currentReactions + newReactionObj
+                messageDao.insertMessage(existingEntity.copy(reactions = updatedList))
             }
+            if (messageId > 0) {
+                chatApiService.addReaction(messageId, reaction)
+            }
+            Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -428,12 +539,16 @@ class ChatRepositoryImpl @Inject constructor(
 
     override suspend fun removeReaction(messageId: Long): Result<Unit> = withContext(Dispatchers.IO) {
         try {
-            val response = chatApiService.removeReaction(messageId)
-            if (response.isSuccessful) {
-                Result.success(Unit)
-            } else {
-                Result.failure(Exception("Failed to remove reaction: ${response.message()}"))
+            val currentUserId = tokenManager.userId.firstOrNull() ?: 0L
+            val existingEntity = messageDao.getMessageById(messageId)
+            if (existingEntity != null && existingEntity.reactions != null) {
+                val updatedList = existingEntity.reactions.filterNot { it.userId == currentUserId }
+                messageDao.insertMessage(existingEntity.copy(reactions = updatedList))
             }
+            if (messageId > 0) {
+                chatApiService.removeReaction(messageId)
+            }
+            Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
         }

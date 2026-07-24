@@ -42,7 +42,7 @@ class WebSocketClient(
                 return@launch
             }
 
-            val url = "ws://10.0.2.2:8080/ws?token=$token"
+            val url = "${com.messaging.util.Constants.WS_BASE_URL}?token=$token"
             val request = Request.Builder().url(url).build()
 
             webSocket = okHttpClient.newWebSocket(request, object : WebSocketListener() {

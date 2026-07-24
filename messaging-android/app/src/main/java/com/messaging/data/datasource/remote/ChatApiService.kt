@@ -1,7 +1,9 @@
 package com.messaging.data.datasource.remote
 
+import com.messaging.data.model.request.ContactSyncRequest
 import com.messaging.data.model.request.DeviceRegisterRequest
 import com.messaging.data.model.request.GroupCreateRequest
+import com.messaging.data.model.request.MessageRequest
 import com.messaging.data.model.request.UserProfileUpdateRequest
 import com.messaging.data.model.request.UserSettingsUpdateRequest
 import com.messaging.data.model.response.ChatResponse
@@ -17,6 +19,11 @@ import retrofit2.http.*
  * ChatApiService - Retrofit HTTP endpoints for messaging operations
  */
 interface ChatApiService {
+    @POST("v1/chats/message")
+    suspend fun sendHttpMessage(
+        @Body request: MessageRequest
+    ): Response<MessageResponse>
+
     @POST("v1/chats")
     suspend fun getOrCreateChat(
         @Query("recipientId") recipientId: Long
@@ -43,6 +50,11 @@ interface ChatApiService {
     @GET("v1/users/search")
     suspend fun searchUsers(
         @Query("query") query: String
+    ): Response<List<UserResponse>>
+
+    @POST("v1/users/sync-contacts")
+    suspend fun syncContacts(
+        @Body request: ContactSyncRequest
     ): Response<List<UserResponse>>
 
     @GET("v1/users/all")

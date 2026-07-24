@@ -19,6 +19,8 @@ import retrofit2.converter.gson.GsonConverterFactory
 import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 
+import com.messaging.util.Constants
+
 /**
  * NetworkModule - Configures network clients and Retrofit API declarations
  */
@@ -26,7 +28,7 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
 
-    private const val BASE_URL = "http://10.0.2.2:8080/api/"
+    private val BASE_URL = Constants.BASE_URL
 
     @Singleton
     @Provides

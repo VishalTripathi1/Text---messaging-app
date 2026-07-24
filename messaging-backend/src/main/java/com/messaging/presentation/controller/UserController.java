@@ -1,5 +1,6 @@
 package com.messaging.presentation.controller;
 
+import com.messaging.domain.dto.request.ContactSyncRequest;
 import com.messaging.application.service.UserService;
 import com.messaging.domain.dto.request.UserProfileUpdateRequest;
 import com.messaging.domain.dto.request.UserSettingsUpdateRequest;
@@ -37,6 +38,15 @@ public class UserController {
     @Operation(summary = "Search users", description = "Search users by username or email query")
     public ResponseEntity<List<UserResponse>> searchUsers(@RequestParam("query") String query) {
         return ResponseEntity.ok(userService.searchUsers(query));
+    }
+
+    @PostMapping("/sync-contacts")
+    @Operation(summary = "Sync phone contacts", description = "Matches a list of phone numbers against registered app users")
+    public ResponseEntity<List<UserResponse>> syncContacts(
+            @AuthenticationPrincipal CustomUserPrincipal principal,
+            @Valid @RequestBody ContactSyncRequest request
+    ) {
+        return ResponseEntity.ok(userService.syncContacts(principal.getId(), request));
     }
 
     @GetMapping("/me")

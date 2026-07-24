@@ -19,6 +19,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 import java.util.stream.Collectors;
 
+import com.messaging.domain.dto.request.ContactSyncRequest;
+
 /**
  * UserServiceImpl - Implementation of UserService for profile and settings updates
  */
@@ -44,7 +46,41 @@ public class UserServiceImpl implements UserService {
     public List<UserResponse> searchUsers(String query) {
         return userRepository.findAll().stream()
                 .filter(u -> u.getUsername().toLowerCase().contains(query.toLowerCase()) || 
-                             u.getEmail().toLowerCase().contains(query.toLowerCase()))
+                             u.getEmail().toLowerCase().contains(query.toLowerCase()) ||
+                             (u.getPhoneNumber() != null && u.getPhoneNumber().contains(query)))
+                .map(this::mapToUserResponse)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<UserResponse> syncContacts(Long currentUserId, ContactSyncRequest request) {
+        if (request == null || request.getPhoneNumbers() == null || request.getPhoneNumbers().isEmpty()) {
+            return List.of();
+        }
+
+        List<String> normalizedList = request.getPhoneNumbers().stream()
+                .filter(p -> p != null && !p.trim().isEmpty())
+                .map(p -> p.replaceAll("[^0-9]", ""))
+                .filter(p -> !p.isEmpty())
+                .collect(Collectors.toList());
+
+        if (normalizedList.isEmpty()) {
+            return List.of();
+        }
+
+        return userRepository.findAll().stream()
+                .filter(u -> !u.getId().equals(currentUserId))
+                .filter(u -> {
+                    if (u.getPhoneNumber() == null) return false;
+                    String userPhoneDigits = u.getPhoneNumber().replaceAll("[^0-9]", "");
+                    if (userPhoneDigits.isEmpty()) return false;
+                    return normalizedList.stream().anyMatch(inputPhone -> 
+                        inputPhone.equals(userPhoneDigits) || 
+                        (inputPhone.length() >= 10 && userPhoneDigits.endsWith(inputPhone.substring(inputPhone.length() - 10))) ||
+                        (userPhoneDigits.length() >= 10 && inputPhone.endsWith(userPhoneDigits.substring(userPhoneDigits.length() - 10)))
+                    );
+                })
                 .map(this::mapToUserResponse)
                 .collect(Collectors.toList());
     }

@@ -36,12 +36,16 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 Long userId = jwtProvider.getUserIdFromToken(jwt);
 
                 if (userId != null) {
-                    var userDetails = customUserDetailsService.loadUserById(userId);
-                    var authentication = new UsernamePasswordAuthenticationToken(
-                            userDetails, null, userDetails.getAuthorities());
-                    authentication.setDetails(
-                            new WebAuthenticationDetailsSource().buildDetails(request));
-                    SecurityContextHolder.getContext().setAuthentication(authentication);
+                    try {
+                        var userDetails = customUserDetailsService.loadUserById(userId);
+                        var authentication = new UsernamePasswordAuthenticationToken(
+                                userDetails, null, userDetails.getAuthorities());
+                        authentication.setDetails(
+                                new WebAuthenticationDetailsSource().buildDetails(request));
+                        SecurityContextHolder.getContext().setAuthentication(authentication);
+                    } catch (Exception e) {
+                        log.warn("User ID {} from token not found: {}", userId, e.getMessage());
+                    }
                 }
             }
         } catch (Exception ex) {
