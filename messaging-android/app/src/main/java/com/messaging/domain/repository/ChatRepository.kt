@@ -75,4 +75,8 @@ interface ChatRepository {
     ): Result<Unit>
 
     suspend fun unregisterDevice(deviceId: String): Result<Unit>
+
+    suspend fun toggleReaction(messageId: Long, reaction: String): Result<Unit>
+
+    suspend fun clearLocalData()
 }

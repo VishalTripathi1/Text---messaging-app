@@ -181,6 +181,12 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    fun toggleReaction(messageId: Long, reaction: String) {
+        viewModelScope.launch {
+            chatRepository.toggleReaction(messageId, reaction)
+        }
+    }
+
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery
 

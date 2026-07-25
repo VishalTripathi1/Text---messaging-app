@@ -109,7 +109,26 @@ class ChatRepositoryImpl @Inject constructor(
             }
             
             val groupEntities = if (groupsResponse.isSuccessful && groupsResponse.body() != null) {
-                groupsResponse.body()!!.map { it.toEntity() }
+                groupsResponse.body()!!.map { groupResp ->
+                    val existing = chatDao.getChatById(-groupResp.id)
+                    ChatEntity(
+                        id = -groupResp.id,
+                        otherUserId = null,
+                        otherUsername = null,
+                        otherDisplayName = null,
+                        otherProfilePictureUrl = null,
+                        otherStatus = null,
+                        lastMessageText = existing?.lastMessageText,
+                        lastMessageSenderId = existing?.lastMessageSenderId,
+                        lastMessageAt = existing?.lastMessageAt ?: groupResp.createdAt.toEpochMillis(),
+                        isPinned = existing?.isPinned ?: false,
+                        isArchived = existing?.isArchived ?: false,
+                        unreadCount = existing?.unreadCount ?: 0,
+                        isGroup = true,
+                        groupName = groupResp.groupName,
+                        groupDescription = groupResp.description
+                    )
+                }
             } else {
                 emptyList()
             }
@@ -293,7 +312,10 @@ class ChatRepositoryImpl @Inject constructor(
         return@withContext try {
             val response = chatApiService.getAllUsers()
             if (response.isSuccessful && response.body() != null) {
-                val users = response.body()!!.map { it.toDomain() }
+                val currentUserId = tokenManager.userId.firstOrNull() ?: 0L
+                val users = response.body()!!
+                    .filter { it.id != currentUserId }
+                    .map { it.toDomain() }
                 Result.success(users)
             } else {
                 Result.failure(Exception("Failed to load contacts"))
@@ -307,7 +329,10 @@ class ChatRepositoryImpl @Inject constructor(
         return@withContext try {
             val response = chatApiService.searchUsers(query)
             if (response.isSuccessful && response.body() != null) {
-                val users = response.body()!!.map { it.toDomain() }
+                val currentUserId = tokenManager.userId.firstOrNull() ?: 0L
+                val users = response.body()!!
+                    .filter { it.id != currentUserId }
+                    .map { it.toDomain() }
                 Result.success(users)
             } else {
                 Result.failure(Exception("Failed to search contacts"))
@@ -341,10 +366,18 @@ class ChatRepositoryImpl @Inject constructor(
                     val isOutgoing = response.senderId == currentUserId
                     val deliveryStatus = if (isOutgoing) "SENT" else "READ"
                     
+                    val groupId = response.groupId
+                    if (isOutgoing) {
+                        if (groupId != null) {
+                            messageDao.deletePendingMessagesForGroup(groupId)
+                        } else if (response.chatId != null) {
+                            messageDao.deletePendingMessagesForChat(response.chatId)
+                        }
+                    }
+
                     val entity = response.toEntity(deliveryStatus)
                     messageDao.insertMessage(entity)
 
-                    val groupId = response.groupId
                     val resolvedChatId = if (groupId != null) -groupId else response.chatId
                     if (resolvedChatId != null) {
                         var chat = chatDao.getChatById(resolvedChatId)
@@ -398,7 +431,31 @@ class ChatRepositoryImpl @Inject constructor(
                     val messageId = (payloadMap["messageId"] as? Number)?.toLong()
                     val status = payloadMap["status"] as? String
                     if (messageId != null && status != null) {
-                        messageDao.updateDeliveryStatus(messageId, status)
+                        val existingMessage = messageDao.getMessageById(messageId)
+                        if (existingMessage != null) {
+                            // We already hold this message under its real id (e.g. it was
+                            // already echoed back via CHAT_MESSAGE) - just advance its
+                            // status: PENDING -> SENT -> DELIVERED -> READ.
+                            messageDao.updateDeliveryStatus(messageId, status)
+                        } else {
+                            // This is the first confirmation for a message we just sent.
+                            // Locally it is still stored under its temporary negative id
+                            // (see sendMessage()), so it can't be found by the real,
+                            // server-assigned messageId yet. Resolve it using the
+                            // envelope-level chatId/groupId (same fields READ_RECEIPT
+                            // already relies on) so the pending/clock icon can clear.
+                            val envelopeGroupId = wsMessage.groupId
+                            val envelopeChatId = wsMessage.chatId
+                            val pending = when {
+                                envelopeGroupId != null -> messageDao.getOldestPendingMessageForGroup(envelopeGroupId)
+                                envelopeChatId != null -> messageDao.getOldestPendingMessageForChat(envelopeChatId)
+                                else -> null
+                            }
+                            if (pending != null) {
+                                messageDao.deleteMessageById(pending.id)
+                                messageDao.insertMessage(pending.copy(id = messageId, deliveryStatus = status))
+                            }
+                        }
                     }
                 }
                 "READ_RECEIPT" -> {
@@ -417,7 +474,10 @@ class ChatRepositoryImpl @Inject constructor(
         try {
             val request = com.messaging.data.model.request.GroupCreateRequest(name, description, memberIds)
             val response = chatApiService.createGroup(request)
-            if (response.isSuccessful) {
+            if (response.isSuccessful && response.body() != null) {
+                val groupResponse = response.body()!!
+                val entity = groupResponse.toEntity()
+                chatDao.insertChat(entity)
                 syncChats()
                 Result.success(Unit)
             } else {
@@ -636,6 +696,30 @@ class ChatRepositoryImpl @Inject constructor(
             }
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    override suspend fun toggleReaction(messageId: Long, reaction: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val currentUserId = tokenManager.userId.firstOrNull() ?: 0L
+            val existingEntity = messageDao.getMessageById(messageId)
+            val userReaction = existingEntity?.reactions?.firstOrNull { it.userId == currentUserId }
+            if (userReaction != null && userReaction.reaction == reaction) {
+                removeReaction(messageId)
+            } else {
+                addReaction(messageId, reaction)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun clearLocalData(): Unit = withContext(Dispatchers.IO) {
+        try {
+            chatDao.deleteAllChats()
+            messageDao.deleteAllMessages()
+        } catch (e: Exception) {
+            Log.e("ChatRepositoryImpl", "Error clearing local data", e)
         }
     }
 }

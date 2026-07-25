@@ -39,10 +39,12 @@ fun SearchScreen(
     viewModel: SearchViewModel = hiltViewModel()
 ) {
     val contacts by viewModel.contacts.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     var queryState by remember { mutableStateOf("") }
 
     val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
 
     val contactPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -55,6 +57,13 @@ fun SearchScreen(
         }
     }
 
+    LaunchedEffect(errorMessage) {
+        errorMessage?.let {
+            snackbarHostState.showSnackbar(it, duration = SnackbarDuration.Short)
+            viewModel.clearError()
+        }
+    }
+
     LaunchedEffect(Unit) {
         viewModel.chatCreatedEvent.collect { chatId ->
             navController.navigate(Screen.ChatDetail.route.replace("{chatId}", chatId.toString())) {
@@ -64,6 +73,7 @@ fun SearchScreen(
     }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {

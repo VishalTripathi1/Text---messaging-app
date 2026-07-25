@@ -7,10 +7,11 @@ import com.messaging.domain.entity.User
 import com.messaging.domain.repository.ChatRepository
 import com.messaging.domain.repository.UserRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -29,8 +30,11 @@ class SearchViewModel @Inject constructor(
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading
 
-    private val _chatCreatedEvent = MutableSharedFlow<Long>()
-    val chatCreatedEvent: SharedFlow<Long> = _chatCreatedEvent
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage
+
+    private val _chatCreatedChannel = Channel<Long>(Channel.BUFFERED)
+    val chatCreatedEvent: Flow<Long> = _chatCreatedChannel.receiveAsFlow()
 
     init {
         loadContacts()
@@ -39,10 +43,11 @@ class SearchViewModel @Inject constructor(
     fun loadContacts() {
         viewModelScope.launch {
             _isLoading.value = true
+            _errorMessage.value = null
             chatRepository.getContacts().onSuccess {
                 _contacts.value = it
             }.onFailure {
-                it.printStackTrace()
+                _errorMessage.value = it.localizedMessage ?: "Failed to load contacts"
             }
             _isLoading.value = false
         }
@@ -55,10 +60,11 @@ class SearchViewModel @Inject constructor(
         }
         viewModelScope.launch {
             _isLoading.value = true
+            _errorMessage.value = null
             chatRepository.searchContacts(query).onSuccess {
                 _contacts.value = it
             }.onFailure {
-                it.printStackTrace()
+                _errorMessage.value = it.localizedMessage ?: "Search failed"
             }
             _isLoading.value = false
         }
@@ -67,10 +73,11 @@ class SearchViewModel @Inject constructor(
     fun syncPhoneContacts(phoneNumbers: List<String>) {
         viewModelScope.launch {
             _isLoading.value = true
+            _errorMessage.value = null
             userRepository.syncContacts(phoneNumbers).onSuccess { userResponses ->
                 _contacts.value = userResponses.map { it.toDomain() }
             }.onFailure {
-                it.printStackTrace()
+                _errorMessage.value = it.localizedMessage ?: "Contact sync failed"
             }
             _isLoading.value = false
         }
@@ -79,12 +86,17 @@ class SearchViewModel @Inject constructor(
     fun startChat(recipientId: Long) {
         viewModelScope.launch {
             _isLoading.value = true
+            _errorMessage.value = null
             chatRepository.getOrCreateChat(recipientId).onSuccess { chat ->
-                _chatCreatedEvent.emit(chat.id)
+                _chatCreatedChannel.send(chat.id)
             }.onFailure {
-                it.printStackTrace()
+                _errorMessage.value = it.localizedMessage ?: "Failed to start chat"
             }
             _isLoading.value = false
         }
+    }
+
+    fun clearError() {
+        _errorMessage.value = null
     }
 }

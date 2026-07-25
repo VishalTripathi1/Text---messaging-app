@@ -1,5 +1,7 @@
 package com.messaging.data.repository
 
+import com.messaging.data.datasource.local.ChatDao
+import com.messaging.data.datasource.local.MessageDao
 import com.messaging.data.datasource.remote.AuthApiService
 import com.messaging.data.model.request.LoginRequest
 import com.messaging.data.model.request.RegisterRequest
@@ -16,7 +18,9 @@ import javax.inject.Inject
  */
 class AuthRepositoryImpl @Inject constructor(
     private val authApiService: AuthApiService,
-    private val tokenManager: TokenManager
+    private val tokenManager: TokenManager,
+    private val chatDao: ChatDao,
+    private val messageDao: MessageDao
 ) : AuthRepository {
 
     override suspend fun register(request: RegisterRequest): Result<AuthResponse> {
@@ -24,6 +28,8 @@ class AuthRepositoryImpl @Inject constructor(
             val response = authApiService.register(request)
             if (response.isSuccessful && response.body() != null) {
                 val authResponse = response.body()!!
+                chatDao.deleteAllChats()
+                messageDao.deleteAllMessages()
                 tokenManager.saveTokens(
                     authResponse.accessToken,
                     authResponse.refreshToken,
@@ -46,6 +52,8 @@ class AuthRepositoryImpl @Inject constructor(
             val response = authApiService.login(request)
             if (response.isSuccessful && response.body() != null) {
                 val authResponse = response.body()!!
+                chatDao.deleteAllChats()
+                messageDao.deleteAllMessages()
                 tokenManager.saveTokens(
                     authResponse.accessToken,
                     authResponse.refreshToken,
@@ -123,9 +131,13 @@ class AuthRepositoryImpl @Inject constructor(
             if (token != null) {
                 authApiService.logout("Bearer $token")
             }
+            chatDao.deleteAllChats()
+            messageDao.deleteAllMessages()
             tokenManager.clearTokens()
             Result.success(Unit)
         } catch (e: Exception) {
+            chatDao.deleteAllChats()
+            messageDao.deleteAllMessages()
             tokenManager.clearTokens()
             Result.success(Unit)
         }
@@ -137,6 +149,8 @@ class AuthRepositoryImpl @Inject constructor(
     override val username: Flow<String?> = tokenManager.username
 
     override suspend fun clearSession() {
+        chatDao.deleteAllChats()
+        messageDao.deleteAllMessages()
         tokenManager.clearTokens()
     }
 }

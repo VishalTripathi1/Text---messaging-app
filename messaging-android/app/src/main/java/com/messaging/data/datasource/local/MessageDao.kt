@@ -49,4 +49,19 @@ interface MessageDao {
 
     @Query("SELECT * FROM messages WHERE groupId = :groupId ORDER BY createdAt DESC LIMIT 1")
     fun getLatestMessageForGroup(groupId: Long): MessageEntity?
+
+    @Query("DELETE FROM messages WHERE chatId = :chatId AND id < 0")
+    fun deletePendingMessagesForChat(chatId: Long)
+
+    @Query("DELETE FROM messages WHERE groupId = :groupId AND id < 0")
+    fun deletePendingMessagesForGroup(groupId: Long)
+
+    @Query("SELECT * FROM messages WHERE chatId = :chatId AND id < 0 ORDER BY createdAt ASC LIMIT 1")
+    fun getOldestPendingMessageForChat(chatId: Long): MessageEntity?
+
+    @Query("SELECT * FROM messages WHERE groupId = :groupId AND id < 0 ORDER BY createdAt ASC LIMIT 1")
+    fun getOldestPendingMessageForGroup(groupId: Long): MessageEntity?
+
+    @Query("DELETE FROM messages")
+    fun deleteAllMessages()
 }
