@@ -52,12 +52,14 @@ public class AuthHandshakeInterceptor implements HandshakeInterceptor {
     //     return false;
     // }
 
+    
     @Override
 public boolean beforeHandshake(ServerHttpRequest request,
                                ServerHttpResponse response,
                                WebSocketHandler wsHandler,
                                Map<String, Object> attributes) {
 
+    log.info("===== NEW WEBSOCKET BUILD =====");
     if (request instanceof ServletServerHttpRequest) {
         ServletServerHttpRequest servletRequest = (ServletServerHttpRequest) request;
 
