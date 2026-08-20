@@ -11,6 +11,7 @@ import dagger.hilt.components.SingletonComponent
 import com.google.gson.Gson
 import com.messaging.data.datasource.remote.AuthInterceptor
 import com.messaging.data.datasource.remote.ChatApiService
+import com.messaging.data.datasource.remote.TokenAuthenticator
 import com.messaging.data.datasource.remote.WebSocketClient
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -20,6 +21,11 @@ import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 
 import com.messaging.util.Constants
+
+/** Qualifier for the internal OkHttpClient used only for token-refresh calls. */
+@javax.inject.Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class PlainOkHttpClient
 
 /**
  * NetworkModule - Configures network clients and Retrofit API declarations
@@ -60,15 +66,44 @@ object NetworkModule {
         }
     }
 
+    /**
+     * A bare client (no auth interceptor/authenticator) used internally by [TokenAuthenticator]
+     * to call the refresh-token endpoint without recursing back into itself.
+     */
+    @Singleton
+    @Provides
+    @PlainOkHttpClient
+    fun providePlainOkHttpClient(
+        loggingInterceptor: HttpLoggingInterceptor
+    ): OkHttpClient {
+        return OkHttpClient.Builder()
+            .addInterceptor(loggingInterceptor)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .writeTimeout(15, TimeUnit.SECONDS)
+            .build()
+    }
+
+    @Singleton
+    @Provides
+    fun provideTokenAuthenticator(
+        tokenManager: TokenManager,
+        @PlainOkHttpClient plainOkHttpClient: OkHttpClient
+    ): TokenAuthenticator {
+        return TokenAuthenticator(tokenManager) { plainOkHttpClient }
+    }
+
     @Singleton
     @Provides
     fun provideOkHttpClient(
         loggingInterceptor: HttpLoggingInterceptor,
-        authInterceptor: AuthInterceptor
+        authInterceptor: AuthInterceptor,
+        tokenAuthenticator: TokenAuthenticator
     ): OkHttpClient {
         return OkHttpClient.Builder()
             .addInterceptor(authInterceptor)
             .addInterceptor(loggingInterceptor)
+            .authenticator(tokenAuthenticator)
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
             .writeTimeout(15, TimeUnit.SECONDS)

@@ -139,11 +139,12 @@ public class ChatController {
 
     @GetMapping("/search")
     public ResponseEntity<List<MessageResponse>> searchMessages(
+            @AuthenticationPrincipal CustomUserPrincipal principal,
             @RequestParam("query") String query,
             @RequestParam(value = "page", defaultValue = "0") int page,
             @RequestParam(value = "size", defaultValue = "20") int size
     ) {
-        List<MessageResponse> messages = messageService.searchMessages(query, page, size);
+        List<MessageResponse> messages = messageService.searchMessages(principal.getId(), query, page, size);
         return ResponseEntity.ok(messages);
     }
 }

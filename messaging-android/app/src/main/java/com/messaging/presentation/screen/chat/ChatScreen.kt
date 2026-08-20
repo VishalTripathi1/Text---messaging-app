@@ -1,5 +1,6 @@
 package com.messaging.presentation.screen.chat
 
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -33,6 +34,16 @@ import java.text.SimpleDateFormat
 import java.util.*
 
 /**
+ * A file the user has picked but not yet sent - lets them review/remove it before it goes out.
+ */
+data class PendingAttachment(
+    val fileBytes: ByteArray,
+    val fileName: String,
+    val mimeType: String,
+    val messageType: String
+)
+
+/**
  * ChatScreen - Renders a conversation list of bubbles with double ticks, attachments, typing state, reactions, and search
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -61,6 +72,10 @@ fun ChatScreen(
         }
     }
 
+    // Staged attachment: picking a file no longer sends it immediately. Instead it's held here
+    // so the user can review it - and remove it via the "x" button - before it's actually sent.
+    var pendingAttachment by remember { mutableStateOf<PendingAttachment?>(null) }
+
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -76,7 +91,7 @@ fun ChatScreen(
                 }
                 val mimeType = contentResolver.getType(uri) ?: "application/octet-stream"
                 val fileBytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                
+
                 if (fileBytes != null) {
                     val msgType = when {
                         mimeType.startsWith("image/") -> "IMAGE"
@@ -84,7 +99,7 @@ fun ChatScreen(
                         mimeType.startsWith("audio/") -> "VOICE"
                         else -> "DOCUMENT"
                     }
-                    viewModel.sendMediaMessage(fileBytes, fileName, mimeType, msgType)
+                    pendingAttachment = PendingAttachment(fileBytes, fileName, mimeType, msgType)
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -196,8 +211,9 @@ fun ChatScreen(
                     MessageBubble(
                         message = message,
                         isOwnMessage = isOwnMessage,
+                        currentUserId = viewModel.currentUserId,
                         onReact = { reaction ->
-                            viewModel.addReaction(message.id, reaction)
+                            viewModel.toggleReaction(message.id, reaction)
                         },
                         onEdit = { newText ->
                             viewModel.editMessage(message.id, newText)
@@ -206,6 +222,47 @@ fun ChatScreen(
                             viewModel.deleteMessage(message.id)
                         }
                     )
+                }
+            }
+
+            // Pending attachment preview - lets the user remove a wrongly-picked file before sending
+            pendingAttachment?.let { attachment ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AttachFile,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = attachment.fileName,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "${attachment.messageType} • ${attachment.fileBytes.size / 1024} KB",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = { pendingAttachment = null }) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Remove Attachment",
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                    }
                 }
             }
 
@@ -241,16 +298,28 @@ fun ChatScreen(
                 Spacer(modifier = Modifier.width(8.dp))
                 IconButton(
                     onClick = {
-                        if (textState.isNotBlank()) {
+                        val attachment = pendingAttachment
+                        if (attachment != null) {
+                            viewModel.sendMediaMessage(
+                                attachment.fileBytes,
+                                attachment.fileName,
+                                attachment.mimeType,
+                                attachment.messageType
+                            )
+                            pendingAttachment = null
+                            textState = ""
+                        } else if (textState.isNotBlank()) {
                             viewModel.sendMessage(textState)
                             textState = ""
                         }
                     },
+                    enabled = textState.isNotBlank() || pendingAttachment != null,
                     modifier = Modifier
                         .clip(RoundedCornerShape(50))
                         .background(MaterialTheme.colorScheme.primary),
                     colors = IconButtonDefaults.iconButtonColors(
-                        contentColor = Color.White
+                        contentColor = Color.White,
+                        disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
                     )
                 ) {
                     Icon(imageVector = Icons.Default.Send, contentDescription = "Send Message")
@@ -265,10 +334,12 @@ fun ChatScreen(
 fun MessageBubble(
     message: Message,
     isOwnMessage: Boolean,
+    currentUserId: Long,
     onReact: (String) -> Unit,
     onEdit: (String) -> Unit,
     onDelete: () -> Unit
 ) {
+    val myCurrentReaction = message.reactions?.firstOrNull { it.userId == currentUserId }?.reaction
     val align = if (isOwnMessage) Alignment.End else Alignment.Start
     val bubbleColor = if (isOwnMessage) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
     val textColor = if (isOwnMessage) Color.White else MaterialTheme.colorScheme.onSurface
@@ -354,7 +425,7 @@ fun MessageBubble(
                             color = textColor.copy(alpha = 0.5f)
                         )
                     }
-                    val sdf = SimpleDateFormat("hh:mm a", Locale.getDefault())
+                    val sdf = remember { SimpleDateFormat("hh:mm a", Locale.getDefault()) }
                     val timeStr = sdf.format(Date(message.createdAt))
                     Text(
                         text = timeStr,
@@ -432,16 +503,25 @@ fun MessageBubble(
                     ) {
                         val emojis = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
                         emojis.forEach { emoji ->
-                            Text(
-                                text = emoji,
-                                fontSize = 28.sp,
+                            val isSelected = myCurrentReaction == emoji
+                            Box(
                                 modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(
+                                        if (isSelected) MaterialTheme.colorScheme.primaryContainer
+                                        else Color.Transparent
+                                    )
                                     .clickable {
                                         onReact(emoji)
                                         showOptions = false
                                     }
-                                    .padding(4.dp)
-                            )
+                                    .padding(6.dp)
+                            ) {
+                                Text(
+                                    text = emoji,
+                                    fontSize = 28.sp
+                                )
+                            }
                         }
                     }
 

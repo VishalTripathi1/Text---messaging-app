@@ -386,9 +386,9 @@ public class MessageServiceImpl implements MessageService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<MessageResponse> searchMessages(String query, int page, int size) {
+    public List<MessageResponse> searchMessages(Long userId, String query, int page, int size) {
         Pageable pageable = PageRequest.of(page, size);
-        return messageRepository.searchMessages(query, pageable)
+        return messageRepository.searchMessages(userId, query, pageable)
                 .getContent()
                 .stream()
                 .map(this::mapToMessageResponse)

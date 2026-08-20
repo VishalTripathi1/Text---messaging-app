@@ -22,15 +22,13 @@ public interface MessageRepository extends JpaRepository<Message, Long> {
            "ORDER BY m.createdAt DESC")
     Page<Message> findGroupMessages(@Param("groupId") Long groupId, Pageable pageable);
 
-    @Query(value = "SELECT * FROM messages m WHERE " +
-           "to_tsvector('english', m.message_text) @@ plainto_tsquery('english', :query) " +
-           "AND m.is_deleted = false " +
-           "ORDER BY m.created_at DESC",
-           countQuery = "SELECT count(*) FROM messages m WHERE " +
-           "to_tsvector('english', m.message_text) @@ plainto_tsquery('english', :query) " +
-           "AND m.is_deleted = false",
-           nativeQuery = true)
-    Page<Message> searchMessages(@Param("query") String query, Pageable pageable);
+    @Query("SELECT m FROM Message m WHERE " +
+           "m.isDeleted = false AND LOWER(m.messageText) LIKE LOWER(CONCAT('%', :query, '%')) AND (" +
+           "  (m.chat IS NOT NULL AND (m.chat.user1.id = :userId OR m.chat.user2.id = :userId)) " +
+           "  OR (m.group IS NOT NULL AND m.group.id IN " +
+           "      (SELECT gm.group.id FROM GroupMember gm WHERE gm.user.id = :userId))" +
+           ") ORDER BY m.createdAt DESC")
+    Page<Message> searchMessages(@Param("userId") Long userId, @Param("query") String query, Pageable pageable);
 
     long countBySenderId(Long userId);
 }

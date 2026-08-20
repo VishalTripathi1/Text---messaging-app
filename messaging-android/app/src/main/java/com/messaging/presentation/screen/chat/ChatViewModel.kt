@@ -13,11 +13,13 @@ import com.messaging.domain.entity.Message
 import com.messaging.domain.repository.ChatRepository
 import com.messaging.util.TokenManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * ChatViewModel - Controls conversation events, message logs, and typing notifications
@@ -52,6 +54,13 @@ class ChatViewModel @Inject constructor(
     private var otherUserId: Long? = null
     var currentUserId: Long = 0
 
+    // Becomes true once chat metadata (in particular otherUserId, needed to route messages to
+    // the recipient in real time over WebSocket) has finished loading. sendMessage() suspends
+    // on this so that messages typed immediately after opening a chat aren't sent with a null
+    // recipientId - previously that race meant the message would save, but never reach the
+    // other person live, making it look like "chat isn't working between two people".
+    private val chatReady = CompletableDeferred<Unit>()
+
     init {
         chatRepository.connectWebSocket()
         viewModelScope.launch {
@@ -64,6 +73,13 @@ class ChatViewModel @Inject constructor(
                 chat = withContext(Dispatchers.IO) {
                     chatDao.getChatById(chatId)
                 }
+            } else if (chatId > 0) {
+                // Always refresh from the server too so the header (name/status) reflects the
+                // latest profile info, not a possibly stale local cache.
+                chatRepository.syncChats()
+                chat = withContext(Dispatchers.IO) {
+                    chatDao.getChatById(chatId)
+                } ?: chat
             }
             if (chat != null) {
                 if (chat.isGroup) {
@@ -90,6 +106,7 @@ class ChatViewModel @Inject constructor(
                     }
                 }
             }
+            chatReady.complete(Unit)
         }
         syncMessages()
         markAsRead()
@@ -110,6 +127,9 @@ class ChatViewModel @Inject constructor(
     fun sendMessage(text: String, type: String = "TEXT") {
         if (text.isBlank()) return
         viewModelScope.launch {
+            // Wait (briefly) for chat metadata to finish loading so recipientId is populated -
+            // otherwise the message is saved but never delivered live to the other person.
+            withTimeoutOrNull(3000) { chatReady.await() }
             val recipientId = otherUserId
             chatRepository.sendMessage(
                 recipientId = recipientId,
@@ -122,6 +142,7 @@ class ChatViewModel @Inject constructor(
 
     fun sendMediaMessage(fileBytes: ByteArray, fileName: String, mimeType: String, type: String) {
         viewModelScope.launch {
+            withTimeoutOrNull(3000) { chatReady.await() }
             chatRepository.uploadAttachment(fileBytes, fileName, mimeType)
                 .onSuccess { responseMap ->
                     val filePath = responseMap["filePath"] as? String ?: ""

@@ -39,5 +39,5 @@ public interface MessageService {
 
     ChatResponse toggleArchiveChat(Long userId, Long chatId, boolean archived);
 
-    List<MessageResponse> searchMessages(String query, int page, int size);
+    List<MessageResponse> searchMessages(Long userId, String query, int page, int size);
 }

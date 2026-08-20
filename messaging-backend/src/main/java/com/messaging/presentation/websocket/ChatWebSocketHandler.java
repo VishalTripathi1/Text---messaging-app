@@ -110,6 +110,11 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
                     sendToUser(memberId, json);
                 }
             }
+            // Echo back to the sender too. Without this, the client's temporary/pending copy
+            // of the message is never replaced with the server-confirmed one, so group
+            // messages appear permanently stuck with a "sending" (clock) icon on the sender's
+            // own device even though delivery to everyone else succeeded.
+            sendToUser(wsMessage.getSenderId(), json);
         } else {
             Long recipientId = wsMessage.getRecipientId();
             if (recipientId != null) {

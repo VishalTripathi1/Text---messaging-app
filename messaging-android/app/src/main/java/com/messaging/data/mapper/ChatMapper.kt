@@ -1,5 +1,6 @@
 package com.messaging.data.mapper
 
+import android.util.Log
 import com.messaging.data.datasource.local.ChatEntity
 import com.messaging.data.datasource.local.MessageEntity
 import com.messaging.data.model.response.ChatResponse
@@ -12,23 +13,38 @@ import com.messaging.domain.entity.Reaction
 import com.messaging.domain.entity.User
 import java.time.Instant
 import java.time.LocalDateTime
-import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
 private val formatter = DateTimeFormatter.ISO_DATE_TIME
 
+/**
+ * Converts a server timestamp string to epoch millis.
+ *
+ * IMPORTANT: The backend serializes `LocalDateTime` (no zone/offset info) and the JVM the
+ * server runs on stores/produces those values in UTC. A string like "2026-08-20T10:15:30"
+ * therefore represents UTC time, NOT the reader's local time. Previously this used
+ * `ZoneId.systemDefault()` which reinterpreted the UTC wall-clock time as if it were already
+ * in the device's local zone, shifting every timestamp by the device/server offset (e.g. by
+ * 5.5 hours for IST users) - this was the cause of messages showing the wrong send time.
+ */
 fun String?.toEpochMillis(): Long {
-    if (this.isNullOrBlank()) return System.currentTimeMillis()
+    if (this.isNullOrBlank()) {
+        return System.currentTimeMillis()
+    }
+
     return try {
+        // Proper offset/zoned timestamp (e.g. "...Z" or "...+05:30") - trust it as-is.
         Instant.parse(this).toEpochMilli()
-    } catch (e: Exception) {
+    } catch (instantException: Exception) {
         try {
-            LocalDateTime.parse(this, formatter)
-                .atZone(ZoneId.systemDefault())
-                .toInstant()
+            // Naive LocalDateTime from the backend - it represents UTC, not device-local time.
+            LocalDateTime
+                .parse(this, formatter)
+                .toInstant(ZoneOffset.UTC)
                 .toEpochMilli()
-        } catch (e2: Exception) {
+        } catch (localDateTimeException: Exception) {
+            Log.e("ChatMapper", "Failed to parse server timestamp: $this", localDateTimeException)
             System.currentTimeMillis()
         }
     }
