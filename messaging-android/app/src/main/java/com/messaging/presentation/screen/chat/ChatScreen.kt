@@ -34,6 +34,27 @@ import java.text.SimpleDateFormat
 import java.util.*
 
 /**
+ * Formats a byte count as a human-readable size (B / KB / MB / GB), matching how every other
+ * chat app displays attachment sizes. Previously this was hardcoded to always divide by 1024
+ * and label the result "KB" - so a 23 MB video showed as "23552 KB" instead of "23 MB".
+ */
+fun formatFileSize(bytes: Long): String {
+    if (bytes < 1024) return "$bytes B"
+    val units = arrayOf("KB", "MB", "GB", "TB")
+    var size = bytes.toDouble() / 1024.0
+    var unitIndex = 0
+    while (size >= 1024.0 && unitIndex < units.size - 1) {
+        size /= 1024.0
+        unitIndex++
+    }
+    return if (size < 10) {
+        String.format(Locale.getDefault(), "%.1f %s", size, units[unitIndex])
+    } else {
+        String.format(Locale.getDefault(), "%.0f %s", size, units[unitIndex])
+    }
+}
+
+/**
  * A file the user has picked but not yet sent - lets them review/remove it before it goes out.
  */
 data class PendingAttachment(
@@ -107,10 +128,24 @@ fun ChatScreen(
         }
     }
 
-    // Auto scroll to bottom when new messages arrive
+    // Auto scroll to bottom when new messages arrive.
+    // The very first time messages load for this chat (opening it, or the initial sync/DB read
+    // completing) we jump straight to the bottom instantly. Using animateScrollToItem here was
+    // the bug: if the message count changed again shortly after (e.g. syncMessages() finishing,
+    // or a new message arriving over the WebSocket) while the first smooth-scroll animation was
+    // still in flight, this LaunchedEffect re-triggered and restarted the animation from
+    // wherever it currently was - so the view could visually settle partway through a long
+    // history instead of at the bottom. Only animate for messages that arrive after the chat is
+    // already open and settled.
+    var hasScrolledToInitialPosition by remember(viewModel.chatId) { mutableStateOf(false) }
     LaunchedEffect(filteredMessages.size) {
         if (filteredMessages.isNotEmpty()) {
-            listState.animateScrollToItem(filteredMessages.size - 1)
+            if (!hasScrolledToInitialPosition) {
+                listState.scrollToItem(filteredMessages.size - 1)
+                hasScrolledToInitialPosition = true
+            } else {
+                listState.animateScrollToItem(filteredMessages.size - 1)
+            }
         }
     }
 
@@ -251,7 +286,7 @@ fun ChatScreen(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "${attachment.messageType} • ${attachment.fileBytes.size / 1024} KB",
+                            text = "${attachment.messageType} • ${formatFileSize(attachment.fileBytes.size.toLong())}",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -652,19 +687,35 @@ fun AttachmentCard(
             )
 
             Column(modifier = Modifier.weight(1f)) {
+                // Show a friendly label for media types instead of the raw device filename
+                // (e.g. "VID_20260817_020225_187.mp4") - matches how most chat apps present
+                // attachments; the actual filename is rarely useful to the reader.
+                val primaryLabel = when (message.messageType) {
+                    "IMAGE" -> "Photo"
+                    "VIDEO" -> "Video"
+                    "VOICE" -> "Voice message"
+                    else -> message.attachmentFileName ?: "Document"
+                }
                 Text(
-                    text = message.attachmentFileName ?: "Attachment",
+                    text = primaryLabel,
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp,
                     color = contentColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                val sizeKb = (message.attachmentFileSize ?: 0L) / 1024L
+                val sizeText = formatFileSize(message.attachmentFileSize ?: 0L)
+                val secondaryText = if (message.messageType == "DOCUMENT") {
+                    sizeText
+                } else {
+                    "${message.attachmentFileName ?: ""} • $sizeText"
+                }
                 Text(
-                    text = "${message.messageType} • ${sizeKb} KB",
+                    text = secondaryText,
                     fontSize = 11.sp,
-                    color = contentColor.copy(alpha = 0.7f)
+                    color = contentColor.copy(alpha = 0.7f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
 

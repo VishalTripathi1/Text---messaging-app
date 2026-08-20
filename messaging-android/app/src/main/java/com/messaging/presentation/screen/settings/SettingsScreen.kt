@@ -411,7 +411,17 @@ private fun SettingsSwitchItem(
             enabled = enabled,
             colors = SwitchDefaults.colors(
                 checkedThumbColor = Color.White,
-                checkedTrackColor = MaterialTheme.colorScheme.primary
+                checkedTrackColor = MaterialTheme.colorScheme.primary,
+                // The theme intentionally sets `outline` and `surfaceVariant` to the SAME color
+                // (see Theme.kt), which are Material3's defaults for the unchecked thumb and
+                // track respectively. That made an "off" switch render as a single flat blob -
+                // the thumb was indistinguishable from its own track, so toggles that were off
+                // looked invisible/impossible to read at a glance. Giving the off-state thumb
+                // and track distinct, higher-contrast colors fixes that without touching the
+                // app-wide theme.
+                uncheckedThumbColor = Color(0xFF94A3B8),
+                uncheckedTrackColor = Color(0xFF1E293B),
+                uncheckedBorderColor = Color(0xFF475569)
             )
         )
     }

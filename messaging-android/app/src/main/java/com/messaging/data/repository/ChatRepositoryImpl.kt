@@ -28,12 +28,14 @@ import com.messaging.util.TokenManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -154,7 +156,7 @@ class ChatRepositoryImpl @Inject constructor(
                 messageDao.insertMessages(messages.map { it.toEntity() })
                 Result.success(Unit)
             } else {
-                Result.failure(Exception("Failed to sync messages: ${response.message()}"))
+                Result.failure(Exception(parseErrorMessage(response, "Failed to sync messages")))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -170,7 +172,7 @@ class ChatRepositoryImpl @Inject constructor(
                 chatDao.insertChat(entity)
                 Result.success(entity.toDomain())
             } else {
-                Result.failure(Exception("Failed to get or create chat: ${response.message()}"))
+                Result.failure(Exception(parseErrorMessage(response, "Failed to get or create chat")))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -250,8 +252,29 @@ class ChatRepositoryImpl @Inject constructor(
             
             val sent = webSocketClient.sendMessage(wsMessage)
             if (sent) {
-                Result.success(Unit)
-            } else {
+                // webSocketClient.sendMessage() returning true only means the frame was handed
+                // to OkHttp's outgoing queue - it does NOT guarantee the server received or
+                // processed it (a dropped connection, a flaky network, or a backend error after
+                // this point are all invisible at this layer). Previously this just declared
+                // success and relied entirely on a WS echo-back to clear the "pending" (clock)
+                // message - if that echo never arrived, the message stayed stuck as pending
+                // forever with no automatic retry. Now we wait briefly for that echo, and if
+                // it doesn't show up in time we fall back to the HTTP path (below), which gives
+                // a definite DELIVERED or FAILED outcome instead of an indefinite pending state.
+                val confirmed = withTimeoutOrNull(6000) {
+                    while (messageDao.getMessageById(tempMessageId) != null) {
+                        delay(500)
+                    }
+                    true
+                } ?: false
+
+                if (confirmed) {
+                    return@withContext Result.success(Unit)
+                }
+                // Fall through to the HTTP fallback below for a guaranteed resolution.
+            }
+
+            run {
                 val httpResp = chatApiService.sendHttpMessage(wsRequest)
                 if (httpResp.isSuccessful && httpResp.body() != null) {
                     val messageResp = httpResp.body()!!
@@ -273,7 +296,7 @@ class ChatRepositoryImpl @Inject constructor(
                     Result.success(Unit)
                 } else {
                     messageDao.updateDeliveryStatus(tempMessageId, "FAILED")
-                    Result.failure(Exception("Failed to send message over HTTP"))
+                    Result.failure(Exception(parseErrorMessage(httpResp, "Failed to send message")))
                 }
             }
         } catch (e: Exception) {
@@ -301,7 +324,7 @@ class ChatRepositoryImpl @Inject constructor(
                 }
                 Result.success(Unit)
             } else {
-                Result.failure(Exception("Failed to mark chat as read on backend"))
+                Result.failure(Exception(parseErrorMessage(response, "Failed to mark chat as read")))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -318,7 +341,7 @@ class ChatRepositoryImpl @Inject constructor(
                     .map { it.toDomain() }
                 Result.success(users)
             } else {
-                Result.failure(Exception("Failed to load contacts"))
+                Result.failure(Exception(parseErrorMessage(response, "Failed to load contacts")))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -335,7 +358,7 @@ class ChatRepositoryImpl @Inject constructor(
                     .map { it.toDomain() }
                 Result.success(users)
             } else {
-                Result.failure(Exception("Failed to search contacts"))
+                Result.failure(Exception(parseErrorMessage(response, "Failed to search contacts")))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -415,13 +438,23 @@ class ChatRepositoryImpl @Inject constructor(
                         }
                         
                         if (chat != null) {
-                            val updatedChat = chat.copy(
-                                lastMessageText = response.messageText,
-                                lastMessageSenderId = response.senderId,
-                                lastMessageAt = response.createdAt.toEpochMillis(),
-                                unreadCount = if (isOutgoing) chat.unreadCount else chat.unreadCount + 1
-                            )
-                            chatDao.insertChat(updatedChat)
+                            if (isOutgoing) {
+                                chatDao.updateLastMessageOnly(
+                                    chatId = resolvedChatId,
+                                    text = response.messageText,
+                                    senderId = response.senderId,
+                                    at = response.createdAt.toEpochMillis()
+                                )
+                            } else {
+                                // Atomic SQL increment - see ChatDao for why this replaced the
+                                // old read-then-write-whole-row approach.
+                                chatDao.incrementUnreadAndUpdateLastMessage(
+                                    chatId = resolvedChatId,
+                                    text = response.messageText,
+                                    senderId = response.senderId,
+                                    at = response.createdAt.toEpochMillis()
+                                )
+                            }
                         }
                     }
                 }
@@ -481,7 +514,7 @@ class ChatRepositoryImpl @Inject constructor(
                 syncChats()
                 Result.success(Unit)
             } else {
-                Result.failure(Exception("Failed to create group: ${response.message()}"))
+                Result.failure(Exception(parseErrorMessage(response, "Failed to create group")))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -498,7 +531,7 @@ class ChatRepositoryImpl @Inject constructor(
             if (response.isSuccessful && body != null) {
                 Result.success(body)
             } else {
-                Result.failure(Exception("Upload failed: ${response.message()}"))
+                Result.failure(Exception(parseErrorMessage(response, "Upload failed")))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -520,7 +553,7 @@ class ChatRepositoryImpl @Inject constructor(
                 messageDao.insertMessages(entities)
                 Result.success(Unit)
             } else {
-                Result.failure(Exception("Failed to sync group messages: ${response.message()}"))
+                Result.failure(Exception(parseErrorMessage(response, "Failed to sync group messages")))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -622,7 +655,7 @@ class ChatRepositoryImpl @Inject constructor(
                 chatDao.insertChat(body.toEntity())
                 Result.success(Unit)
             } else {
-                Result.failure(Exception("Failed to pin chat: ${response.message()}"))
+                Result.failure(Exception(parseErrorMessage(response, "Failed to pin chat")))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -637,7 +670,7 @@ class ChatRepositoryImpl @Inject constructor(
                 chatDao.insertChat(body.toEntity())
                 Result.success(Unit)
             } else {
-                Result.failure(Exception("Failed to archive chat: ${response.message()}"))
+                Result.failure(Exception(parseErrorMessage(response, "Failed to archive chat")))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -651,7 +684,7 @@ class ChatRepositoryImpl @Inject constructor(
             if (response.isSuccessful && body != null) {
                 Result.success(body.map { it.toEntity().toDomain() })
             } else {
-                Result.failure(Exception("Failed to search messages: ${response.message()}"))
+                Result.failure(Exception(parseErrorMessage(response, "Failed to search messages")))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -679,7 +712,7 @@ class ChatRepositoryImpl @Inject constructor(
             if (response.isSuccessful) {
                 Result.success(Unit)
             } else {
-                Result.failure(Exception("Failed to register device: ${response.message()}"))
+                Result.failure(Exception(parseErrorMessage(response, "Failed to register device")))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -692,7 +725,7 @@ class ChatRepositoryImpl @Inject constructor(
             if (response.isSuccessful) {
                 Result.success(Unit)
             } else {
-                Result.failure(Exception("Failed to unregister device: ${response.message()}"))
+                Result.failure(Exception(parseErrorMessage(response, "Failed to unregister device")))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -721,5 +754,35 @@ class ChatRepositoryImpl @Inject constructor(
         } catch (e: Exception) {
             Log.e("ChatRepositoryImpl", "Error clearing local data", e)
         }
+    }
+
+    /**
+     * Builds a useful error message from a failed HTTP response.
+     *
+     * `response.message()` is the raw HTTP status *reason phrase* - it is frequently blank
+     * (Render, like most modern hosts, negotiates HTTP/2, which drops reason phrases entirely
+     * per spec) and was never the actual error the backend reported anyway. Every failure path
+     * in this repository was building its message from that field, which is why errors like
+     * "Failed to get or create chat: " showed up with nothing useful after the colon. This
+     * reads the actual JSON error body the backend sends (see GlobalExceptionHandler on the
+     * server) and falls back to the HTTP status code if the body can't be parsed.
+     */
+    private fun parseErrorMessage(response: retrofit2.Response<*>, fallback: String): String {
+        val bodyText = try {
+            response.errorBody()?.string()
+        } catch (e: Exception) {
+            null
+        }
+        if (!bodyText.isNullOrBlank()) {
+            try {
+                val json = org.json.JSONObject(bodyText)
+                if (json.has("message")) {
+                    return json.getString("message")
+                }
+            } catch (e: Exception) {
+                // Not JSON - fall through to the generic fallback below.
+            }
+        }
+        return "$fallback (HTTP ${response.code()})"
     }
 }

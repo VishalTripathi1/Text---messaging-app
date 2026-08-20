@@ -57,3 +57,5 @@ yarn-error.log
 
 # Docker
 .dockerignore
+.idea/
+*.iml

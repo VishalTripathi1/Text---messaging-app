@@ -8,8 +8,10 @@ import com.messaging.data.model.request.RegisterRequest
 import com.messaging.data.model.response.AuthResponse
 import com.messaging.domain.repository.AuthRepository
 import com.messaging.util.TokenManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import java.io.IOException
 import javax.inject.Inject
 
@@ -28,8 +30,12 @@ class AuthRepositoryImpl @Inject constructor(
             val response = authApiService.register(request)
             if (response.isSuccessful && response.body() != null) {
                 val authResponse = response.body()!!
-                chatDao.deleteAllChats()
-                messageDao.deleteAllMessages()
+                // These are plain (non-suspend) Room queries - they must be run off the main
+                // thread explicitly, or Room throws "Cannot access database on the main thread".
+                withContext(Dispatchers.IO) {
+                    chatDao.deleteAllChats()
+                    messageDao.deleteAllMessages()
+                }
                 tokenManager.saveTokens(
                     authResponse.accessToken,
                     authResponse.refreshToken,
@@ -52,8 +58,10 @@ class AuthRepositoryImpl @Inject constructor(
             val response = authApiService.login(request)
             if (response.isSuccessful && response.body() != null) {
                 val authResponse = response.body()!!
-                chatDao.deleteAllChats()
-                messageDao.deleteAllMessages()
+                withContext(Dispatchers.IO) {
+                    chatDao.deleteAllChats()
+                    messageDao.deleteAllMessages()
+                }
                 tokenManager.saveTokens(
                     authResponse.accessToken,
                     authResponse.refreshToken,
@@ -131,13 +139,17 @@ class AuthRepositoryImpl @Inject constructor(
             if (token != null) {
                 authApiService.logout("Bearer $token")
             }
-            chatDao.deleteAllChats()
-            messageDao.deleteAllMessages()
+            withContext(Dispatchers.IO) {
+                chatDao.deleteAllChats()
+                messageDao.deleteAllMessages()
+            }
             tokenManager.clearTokens()
             Result.success(Unit)
         } catch (e: Exception) {
-            chatDao.deleteAllChats()
-            messageDao.deleteAllMessages()
+            withContext(Dispatchers.IO) {
+                chatDao.deleteAllChats()
+                messageDao.deleteAllMessages()
+            }
             tokenManager.clearTokens()
             Result.success(Unit)
         }
@@ -149,8 +161,10 @@ class AuthRepositoryImpl @Inject constructor(
     override val username: Flow<String?> = tokenManager.username
 
     override suspend fun clearSession() {
-        chatDao.deleteAllChats()
-        messageDao.deleteAllMessages()
+        withContext(Dispatchers.IO) {
+            chatDao.deleteAllChats()
+            messageDao.deleteAllMessages()
+        }
         tokenManager.clearTokens()
     }
 }
