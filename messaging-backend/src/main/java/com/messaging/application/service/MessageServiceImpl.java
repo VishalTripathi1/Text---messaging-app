@@ -237,6 +237,17 @@ public class MessageServiceImpl implements MessageService {
                     .orElse(null);
         }
 
+        if (lastMessageDto == null) {
+            List<Message> latestMessages = messageRepository.findChatMessages(chat.getId(), PageRequest.of(0, 1)).getContent();
+            if (!latestMessages.isEmpty()) {
+                Message latestMsg = latestMessages.get(0);
+                lastMessageDto = mapToMessageResponse(latestMsg);
+                chat.setLastMessageId(latestMsg.getId());
+                chat.setLastMessageAt(latestMsg.getCreatedAt());
+                chatRepository.save(chat);
+            }
+        }
+
         int unreadCount = readReceiptRepository.countUnreadMessagesInChat(chat.getId(), currentUserId);
 
         return ChatResponse.builder()
