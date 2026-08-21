@@ -34,4 +34,5 @@ public class MessageResponse {
     private Long attachmentFileSize;
 
     private java.util.List<ReactionResponse> reactions;
+    private String deliveryStatus;
 }

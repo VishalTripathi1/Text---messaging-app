@@ -10,6 +10,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
@@ -41,6 +43,7 @@ fun ChatListScreen(
 ) {
     val chats by viewModel.chats.collectAsState()
     val isConnected by viewModel.isConnected.collectAsState()
+    val currentUserId by viewModel.currentUserId.collectAsState()
 
     val sortedChats = remember(chats) {
         chats.sortedWith(
@@ -116,6 +119,7 @@ fun ChatListScreen(
                     items(sortedChats) { chat ->
                         ChatItem(
                             chat = chat,
+                            currentUserId = currentUserId,
                             onClick = {
                                 navController.navigate(Screen.ChatDetail.route.replace("{chatId}", chat.id.toString()))
                             },
@@ -142,6 +146,7 @@ fun ChatListScreen(
 @Composable
 fun ChatItem(
     chat: Chat,
+    currentUserId: Long,
     onClick: () -> Unit,
     onPinToggle: () -> Unit,
     onArchiveToggle: () -> Unit
@@ -249,15 +254,62 @@ fun ChatItem(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = chat.lastMessageText ?: "No messages yet",
-                        fontSize = 14.sp,
-                        color = if (chat.unreadCount > 0) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                    Row(
                         modifier = Modifier.weight(1f),
-                        fontWeight = if (chat.unreadCount > 0) FontWeight.Medium else FontWeight.Normal
-                    )
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val isOwnLastMessage = chat.lastMessageSenderId == currentUserId && currentUserId > 0
+                        if (isOwnLastMessage && !chat.lastMessageText.isNullOrBlank()) {
+                            val status = chat.lastMessageStatus ?: "SENT"
+                            val tintColor = if (status == "READ") Color(0xFF06B6D4) else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
+                            when (status) {
+                                "PENDING" -> {
+                                    Icon(
+                                        imageVector = Icons.Default.Schedule,
+                                        contentDescription = "Pending",
+                                        tint = tintColor,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                }
+                                "SENT" -> {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = "Sent",
+                                        tint = tintColor,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                }
+                                "DELIVERED", "READ" -> {
+                                    Row {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = status,
+                                            tint = tintColor,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = status,
+                                            tint = tintColor,
+                                            modifier = Modifier.size(14.dp).offset(x = (-5).dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                }
+                            }
+                        }
+
+                        Text(
+                            text = chat.lastMessageText ?: "No messages yet",
+                            fontSize = 14.sp,
+                            color = if (chat.unreadCount > 0) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            fontWeight = if (chat.unreadCount > 0) FontWeight.Medium else FontWeight.Normal
+                        )
+                    }
 
                     if (chat.unreadCount > 0) {
                         Box(

@@ -286,6 +286,21 @@ public class MessageServiceImpl implements MessageService {
                         .build())
                 .collect(Collectors.toList());
 
+        String statusStr = "SENT";
+        if (message.getChat() != null) {
+            Long recipientId = message.getChat().getUser1().getId().equals(message.getSender().getId()) ?
+                    message.getChat().getUser2().getId() : message.getChat().getUser1().getId();
+
+            if (readReceiptRepository.findByMessageIdAndUserId(message.getId(), recipientId).isPresent()) {
+                statusStr = "READ";
+            } else {
+                Optional<DeliveryStatus> ds = deliveryStatusRepository.findByMessageIdAndRecipientId(message.getId(), recipientId);
+                if (ds.isPresent() && ds.get().getStatus() == DeliveryStatus.DeliveryStatusType.DELIVERED) {
+                    statusStr = "DELIVERED";
+                }
+            }
+        }
+
         return MessageResponse.builder()
                 .id(message.getId())
                 .chatId(message.getChat() != null ? message.getChat().getId() : null)
@@ -303,6 +318,7 @@ public class MessageServiceImpl implements MessageService {
                 .attachmentFileType(attachmentFileType)
                 .attachmentFileSize(attachmentFileSize)
                 .reactions(reactionsList)
+                .deliveryStatus(statusStr)
                 .build();
     }
 

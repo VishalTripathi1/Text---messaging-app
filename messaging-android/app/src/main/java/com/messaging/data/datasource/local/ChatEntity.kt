@@ -16,6 +16,7 @@ data class ChatEntity(
     val otherStatus: String?,
     val lastMessageText: String?,
     val lastMessageSenderId: Long?,
+    val lastMessageStatus: String?,
     val lastMessageAt: Long?,
     val isPinned: Boolean,
     val isArchived: Boolean,

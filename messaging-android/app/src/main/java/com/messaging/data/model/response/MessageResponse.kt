@@ -18,5 +18,6 @@ data class MessageResponse(
     val attachmentFileName: String? = null,
     val attachmentFileType: String? = null,
     val attachmentFileSize: Long? = null,
-    val reactions: List<ReactionResponse>? = null
+    val reactions: List<ReactionResponse>? = null,
+    val deliveryStatus: String? = null
 )

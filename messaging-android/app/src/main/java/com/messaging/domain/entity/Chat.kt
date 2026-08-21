@@ -8,6 +8,7 @@ data class Chat(
     val otherUser: User?,
     val lastMessageText: String?,
     val lastMessageSenderId: Long?,
+    val lastMessageStatus: String?,
     val lastMessageAt: Long?,
     val isPinned: Boolean,
     val isArchived: Boolean,
