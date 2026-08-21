@@ -4,8 +4,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.messaging.application.service.MessageService;
 import com.messaging.domain.dto.request.MessageRequest;
 import com.messaging.domain.dto.response.MessageResponse;
+import com.messaging.domain.entity.Chat;
 import com.messaging.domain.entity.DeliveryStatus;
 import com.messaging.domain.entity.UserProfile;
+import com.messaging.infrastructure.repository.ChatRepository;
 import com.messaging.infrastructure.repository.DeliveryStatusRepository;
 import com.messaging.infrastructure.repository.GroupRepository;
 import com.messaging.infrastructure.repository.UserProfileRepository;
@@ -36,6 +38,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     private final UserProfileRepository userProfileRepository;
     private final GroupRepository groupRepository;
     private final DeliveryStatusRepository deliveryStatusRepository;
+    private final ChatRepository chatRepository;
 
     // Thread-safe map of active WebSocket connections
     private static final Map<Long, WebSocketSession> userSessions = new ConcurrentHashMap<>();
@@ -104,25 +107,29 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
                 .groupId(response.getGroupId())
                 .payload(response)
                 .build();
-        
-        String json = objectMapper.writeValueAsString(outbound);
 
         if (response.getGroupId() != null) {
+            String json = objectMapper.writeValueAsString(outbound);
             List<Long> memberIds = groupRepository.findMemberUserIds(response.getGroupId());
             for (Long memberId : memberIds) {
                 if (!memberId.equals(wsMessage.getSenderId())) {
                     sendToUser(memberId, json);
                 }
             }
-            // Echo back to the sender too. Without this, the client's temporary/pending copy
-            // of the message is never replaced with the server-confirmed one, so group
-            // messages appear permanently stuck with a "sending" (clock) icon on the sender's
-            // own device even though delivery to everyone else succeeded.
             sendToUser(wsMessage.getSenderId(), json);
         } else {
             Long recipientId = wsMessage.getRecipientId();
+            if (recipientId == null && response.getChatId() != null) {
+                Chat chat = chatRepository.findById(response.getChatId()).orElse(null);
+                if (chat != null) {
+                    recipientId = chat.getUser1().getId().equals(wsMessage.getSenderId()) ? chat.getUser2().getId() : chat.getUser1().getId();
+                }
+            }
+
             if (recipientId != null) {
-                boolean delivered = sendToUser(recipientId, json);
+                outbound.setRecipientId(recipientId);
+                String jsonForRecipient = objectMapper.writeValueAsString(outbound);
+                boolean delivered = sendToUser(recipientId, jsonForRecipient);
                 if (delivered) {
                     messageService.markMessageAsDelivered(recipientId, response.getId());
                     
@@ -138,7 +145,8 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             }
             
             // Acknowledge to sender
-            sendToUser(wsMessage.getSenderId(), json);
+            String jsonForSender = objectMapper.writeValueAsString(outbound);
+            sendToUser(wsMessage.getSenderId(), jsonForSender);
         }
     }
 
@@ -157,13 +165,23 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void handleReadReceipt(WebSocketMessage wsMessage) throws IOException {
+        Long senderId = wsMessage.getSenderId();
         if (wsMessage.getChatId() != null) {
-            messageService.markChatAsRead(wsMessage.getSenderId(), wsMessage.getChatId());
-        }
+            messageService.markChatAsRead(senderId, wsMessage.getChatId());
+            
+            Long recipientId = wsMessage.getRecipientId();
+            if (recipientId == null) {
+                Chat chat = chatRepository.findById(wsMessage.getChatId()).orElse(null);
+                if (chat != null) {
+                    recipientId = chat.getUser1().getId().equals(senderId) ? chat.getUser2().getId() : chat.getUser1().getId();
+                }
+            }
 
-        String json = objectMapper.writeValueAsString(wsMessage);
-        if (wsMessage.getRecipientId() != null) {
-            sendToUser(wsMessage.getRecipientId(), json);
+            if (recipientId != null) {
+                wsMessage.setRecipientId(recipientId);
+                String json = objectMapper.writeValueAsString(wsMessage);
+                sendToUser(recipientId, json);
+            }
         }
     }
 
@@ -175,9 +193,18 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             messageService.markMessageAsDelivered(wsMessage.getSenderId(), messageId);
         }
 
-        String json = objectMapper.writeValueAsString(wsMessage);
-        if (wsMessage.getRecipientId() != null) {
-            sendToUser(wsMessage.getRecipientId(), json);
+        Long recipientId = wsMessage.getRecipientId();
+        if (recipientId == null && wsMessage.getChatId() != null) {
+            Chat chat = chatRepository.findById(wsMessage.getChatId()).orElse(null);
+            if (chat != null) {
+                recipientId = chat.getUser1().getId().equals(wsMessage.getSenderId()) ? chat.getUser2().getId() : chat.getUser1().getId();
+            }
+        }
+
+        if (recipientId != null) {
+            wsMessage.setRecipientId(recipientId);
+            String json = objectMapper.writeValueAsString(wsMessage);
+            sendToUser(recipientId, json);
         }
     }
 
