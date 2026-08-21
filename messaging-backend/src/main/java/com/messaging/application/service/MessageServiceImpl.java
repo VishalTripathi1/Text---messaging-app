@@ -200,13 +200,7 @@ public class MessageServiceImpl implements MessageService {
     @Override
     @Transactional
     public void markChatAsRead(Long userId, Long chatId) {
-        // Query all messages in this chat sent by the other participant that have not been read by this user
-        List<Message> unreadMessages = messageRepository.findChatMessages(chatId, Pageable.unpaged())
-                .getContent()
-                .stream()
-                .filter(m -> !m.getSender().getId().equals(userId))
-                .filter(m -> readReceiptRepository.findByMessageIdAndUserId(m.getId(), userId).isEmpty())
-                .collect(Collectors.toList());
+        List<Message> unreadMessages = messageRepository.findUnreadMessagesInChat(chatId, userId);
 
         for (Message message : unreadMessages) {
             readReceiptRepository.save(ReadReceipt.builder()
