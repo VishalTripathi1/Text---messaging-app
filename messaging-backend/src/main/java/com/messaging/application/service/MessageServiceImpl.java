@@ -250,17 +250,20 @@ public class MessageServiceImpl implements MessageService {
     }
 
     private MessageResponse mapToMessageResponse(Message message) {
-        List<Attachment> attachments = attachmentRepository.findByMessageId(message.getId());
         String attachmentPath = null;
         String attachmentFileName = null;
         String attachmentFileType = null;
         Long attachmentFileSize = null;
-        if (attachments != null && !attachments.isEmpty()) {
-            Attachment att = attachments.get(0);
-            attachmentPath = att.getFilePath();
-            attachmentFileName = att.getFileName();
-            attachmentFileType = att.getFileType();
-            attachmentFileSize = att.getFileSize();
+
+        if (!Boolean.TRUE.equals(message.getIsDeleted())) {
+            List<Attachment> attachments = attachmentRepository.findByMessageId(message.getId());
+            if (attachments != null && !attachments.isEmpty()) {
+                Attachment att = attachments.get(0);
+                attachmentPath = att.getFilePath();
+                attachmentFileName = att.getFileName();
+                attachmentFileType = att.getFileType();
+                attachmentFileSize = att.getFileSize();
+            }
         }
 
         List<ReactionResponse> reactionsList = messageReactionRepository.findByMessageId(message.getId())
