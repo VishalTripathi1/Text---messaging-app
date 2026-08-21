@@ -193,7 +193,6 @@ public class AuthServiceImpl implements AuthService {
     }
 
     @Override
-    @Transactional
     public AuthResponse login(
             LoginRequest request
     ) {
@@ -221,6 +220,8 @@ public class AuthServiceImpl implements AuthService {
             );
         }
 
+        // BCrypt password verification executed OUTSIDE transaction scope
+        // so DB connections are NOT held idle during CPU-bound hashing
         if (
                 !passwordEncoder.matches(
                         request.getPassword(),
@@ -231,6 +232,12 @@ public class AuthServiceImpl implements AuthService {
                     "Invalid username or password"
             );
         }
+
+        return createSessionAndBuildAuthResponse(user, request);
+    }
+
+    @Transactional
+    public AuthResponse createSessionAndBuildAuthResponse(User user, LoginRequest request) {
 
         // 1. Get or create device
         Device device =
