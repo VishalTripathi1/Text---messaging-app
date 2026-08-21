@@ -1,11 +1,17 @@
 package com.messaging.presentation.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.messaging.application.service.MessageService;
 import com.messaging.domain.dto.request.MessageRequest;
 import com.messaging.domain.dto.response.ChatResponse;
 import com.messaging.domain.dto.response.MessageResponse;
+import com.messaging.domain.entity.Chat;
+import com.messaging.infrastructure.repository.ChatRepository;
 import com.messaging.infrastructure.security.CustomUserPrincipal;
+import com.messaging.presentation.websocket.ChatWebSocketHandler;
+import com.messaging.presentation.websocket.WebSocketMessage;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
@@ -15,12 +21,15 @@ import java.util.List;
 /**
  * ChatController - REST endpoints for chat sessions and message queries
  */
+@Slf4j
 @RestController
 @RequestMapping("/v1/chats")
 @RequiredArgsConstructor
 public class ChatController {
 
     private final MessageService messageService;
+    private final ChatRepository chatRepository;
+    private final ObjectMapper objectMapper;
 
     @PostMapping
     public ResponseEntity<ChatResponse> getOrCreateChat(
@@ -75,7 +84,24 @@ public class ChatController {
             @AuthenticationPrincipal CustomUserPrincipal principal,
             @PathVariable("chatId") Long chatId
     ) {
-        messageService.markChatAsRead(principal.getId(), chatId);
+        Long userId = principal.getId();
+        messageService.markChatAsRead(userId, chatId);
+
+        chatRepository.findById(chatId).ifPresent(chat -> {
+            Long recipientId = chat.getUser1().getId().equals(userId) ? chat.getUser2().getId() : chat.getUser1().getId();
+            try {
+                WebSocketMessage wsMsg = WebSocketMessage.builder()
+                        .type("READ_RECEIPT")
+                        .senderId(userId)
+                        .recipientId(recipientId)
+                        .chatId(chatId)
+                        .build();
+                ChatWebSocketHandler.sendToUserStatic(recipientId, objectMapper.writeValueAsString(wsMsg));
+            } catch (Exception e) {
+                log.error("Failed to send WebSocket READ_RECEIPT notification to user {}: {}", recipientId, e.getMessage());
+            }
+        });
+
         return ResponseEntity.ok().build();
     }
 

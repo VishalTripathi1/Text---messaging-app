@@ -208,7 +208,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
-    private boolean sendToUser(Long userId, String json) {
+    public static boolean sendToUserStatic(Long userId, String json) {
         WebSocketSession session = userSessions.get(userId);
         if (session != null && session.isOpen()) {
             try {
@@ -219,6 +219,10 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             }
         }
         return false;
+    }
+
+    private boolean sendToUser(Long userId, String json) {
+        return sendToUserStatic(userId, json);
     }
 
     private void broadcastStatus(Long userId, String status) {
