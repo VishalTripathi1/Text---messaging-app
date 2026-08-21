@@ -1,5 +1,6 @@
 package com.messaging
 
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -14,6 +15,8 @@ import com.messaging.presentation.theme.MessagingTheme
 import com.messaging.util.TokenManager
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -25,11 +28,21 @@ import javax.inject.Inject
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        const val EXTRA_DEEP_LINK_CHAT_ID = "deep_link_chat_id"
+    }
+
     @Inject
     lateinit var chatRepository: ChatRepository
 
     @Inject
     lateinit var tokenManager: TokenManager
+
+    // Holds a chat to navigate straight to once the app has finished its normal startup
+    // routing (splash -> auth check). Read from the launch intent below, and refreshed via
+    // onNewIntent() for the case where the app is already running and the user taps another
+    // notification.
+    private val deepLinkChatId = mutableStateOf<Long?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,6 +55,8 @@ class MainActivity : ComponentActivity() {
         // Safely fetch and register FCM push token
         registerFcmToken()
 
+        readDeepLinkFromIntent(intent)
+
         setContent {
             val themeSetting by tokenManager.theme.collectAsState(initial = "SYSTEM")
             val useDarkTheme = when (themeSetting) {
@@ -49,10 +64,24 @@ class MainActivity : ComponentActivity() {
                 "LIGHT" -> false
                 else -> androidx.compose.foundation.isSystemInDarkTheme()
             }
+            val pendingChatId by deepLinkChatId
             MessagingTheme(darkTheme = useDarkTheme) {
                 val navController = rememberNavController()
-                NavGraph(navController = navController)
+                NavGraph(navController = navController, deepLinkChatId = pendingChatId)
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        readDeepLinkFromIntent(intent)
+    }
+
+    private fun readDeepLinkFromIntent(intent: Intent?) {
+        val chatId = intent?.getLongExtra(EXTRA_DEEP_LINK_CHAT_ID, Long.MIN_VALUE) ?: Long.MIN_VALUE
+        if (chatId != Long.MIN_VALUE) {
+            deepLinkChatId.value = chatId
         }
     }
 

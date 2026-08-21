@@ -32,23 +32,40 @@ class WebSocketClient(
     private var isClosedIntentionally = false
     private var reconnectDelay = 2000L
 
+    // Both ChatListViewModel and ChatViewModel call connectWebSocket() independently (each
+    // screen ensures the socket is up when it opens). The old guard only checked
+    // `_connectionStatus.value`, which is false until onOpen() fires - so if a second connect()
+    // call landed while the first handshake was still in flight, it would silently overwrite
+    // the `webSocket` variable with a second live connection, leaking the first one (never
+    // closed, on both the client and server) indefinitely. This flag closes that race window.
+    @Volatile
+    private var isConnecting = false
+
     fun connect() {
         isClosedIntentionally = false
         scope.launch {
-            if (_connectionStatus.value) return@launch
+            if (_connectionStatus.value || isConnecting) return@launch
+            isConnecting = true
             val token = tokenManager.accessToken.firstOrNull()
             if (token.isNullOrBlank()) {
                 Log.e("WebSocketClient", "Cannot connect to WebSockets: Access token is missing")
+                isConnecting = false
                 return@launch
             }
 
             val url = "${com.messaging.util.Constants.WS_BASE_URL}?token=$token"
             val request = Request.Builder().url(url).build()
 
+            // Defensive cleanup: if a stale socket reference somehow still exists (shouldn't
+            // normally happen now, but costs nothing to guard), make sure it's actually closed
+            // rather than just dropping the reference.
+            webSocket?.close(1000, "Reconnecting")
+
             webSocket = okHttpClient.newWebSocket(request, object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
                     Log.i("WebSocketClient", "WebSocket connection opened successfully")
                     _connectionStatus.value = true
+                    isConnecting = false
                     reconnectDelay = 2000L
                 }
 
@@ -72,12 +89,14 @@ class WebSocketClient(
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                     Log.i("WebSocketClient", "WebSocket closed: $code / $reason")
                     _connectionStatus.value = false
+                    isConnecting = false
                     triggerReconnect()
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                     Log.e("WebSocketClient", "WebSocket failure", t)
                     _connectionStatus.value = false
+                    isConnecting = false
                     triggerReconnect()
                 }
             })

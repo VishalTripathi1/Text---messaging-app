@@ -8,6 +8,7 @@ import com.messaging.domain.entity.User;
 import com.messaging.infrastructure.repository.GroupMemberRepository;
 import com.messaging.infrastructure.repository.GroupRepository;
 import com.messaging.infrastructure.repository.UserRepository;
+import com.messaging.presentation.exception.BadRequestException;
 import com.messaging.presentation.exception.ResourceNotFoundException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
@@ -79,17 +80,19 @@ public class GroupServiceImpl implements GroupService {
     }
 
     @Override
-    public GroupResponse getGroupDetails(Long groupId) {
+    public GroupResponse getGroupDetails(Long requesterId, Long groupId) {
         Group group = groupRepository.findById(groupId)
                 .orElseThrow(() -> new ResourceNotFoundException("Group not found"));
+        requireMember(groupId, requesterId);
         return mapToResponse(group);
     }
 
     @Override
     @Transactional
-    public void addMembers(Long groupId, List<Long> userIds) {
+    public void addMembers(Long requesterId, Long groupId, List<Long> userIds) {
         Group group = groupRepository.findById(groupId)
                 .orElseThrow(() -> new ResourceNotFoundException("Group not found"));
+        requireMember(groupId, requesterId);
 
         for (Long userId : userIds) {
             if (groupMemberRepository.findByGroupIdAndUserId(groupId, userId).isPresent()) {
@@ -108,8 +111,30 @@ public class GroupServiceImpl implements GroupService {
 
     @Override
     @Transactional
-    public void removeMember(Long groupId, Long userId) {
+    public void removeMember(Long requesterId, Long groupId, Long userId) {
+        // Any member can remove themselves (leaving the group). Removing someone else
+        // requires being an admin of the group.
+        if (!requesterId.equals(userId)) {
+            GroupMember requesterMembership = requireMember(groupId, requesterId);
+            if (requesterMembership.getRole() != GroupMember.MemberRole.ADMIN) {
+                throw new BadRequestException("Only group admins can remove other members");
+            }
+        } else {
+            requireMember(groupId, requesterId);
+        }
         groupMemberRepository.deleteByGroupIdAndUserId(groupId, userId);
+    }
+
+    /**
+     * Confirms the given user is actually a member of the group before letting them view its
+     * details or manage its membership. Previously these endpoints had no authorization check
+     * at all - any authenticated user who knew (or guessed) a groupId could view any group's
+     * details, add arbitrary members to it, or remove members from it, regardless of whether
+     * they belonged to that group.
+     */
+    private GroupMember requireMember(Long groupId, Long userId) {
+        return groupMemberRepository.findByGroupIdAndUserId(groupId, userId)
+                .orElseThrow(() -> new BadRequestException("You are not a member of this group"));
     }
 
     private GroupResponse mapToResponse(Group group) {

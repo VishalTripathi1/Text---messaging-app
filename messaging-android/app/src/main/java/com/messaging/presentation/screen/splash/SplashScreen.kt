@@ -23,13 +23,18 @@ import com.messaging.presentation.navigation.Screen
 @Composable
 fun SplashScreen(
     navController: NavController,
+    deepLinkChatId: Long? = null,
     viewModel: SplashViewModel = hiltViewModel()
 ) {
     val isLoggedIn by viewModel.isLoggedIn.collectAsState()
 
-    LaunchedEffect(isLoggedIn) {
+    LaunchedEffect(isLoggedIn, deepLinkChatId) {
         isLoggedIn?.let { authenticated ->
-            val targetRoute = if (authenticated) Screen.ChatList.route else Screen.Login.route
+            val targetRoute = when {
+                !authenticated -> Screen.Login.route
+                deepLinkChatId != null -> Screen.ChatDetail.withArgs(deepLinkChatId.toString())
+                else -> Screen.ChatList.route
+            }
             navController.navigate(targetRoute) {
                 popUpTo(Screen.Splash.route) { inclusive = true }
             }

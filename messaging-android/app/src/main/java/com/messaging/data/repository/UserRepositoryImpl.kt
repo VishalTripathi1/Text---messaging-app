@@ -27,7 +27,7 @@ class UserRepositoryImpl @Inject constructor(
             if (response.isSuccessful && response.body() != null) {
                 response.body()!!
             } else {
-                throw Exception("Failed to fetch user: ${response.message()}")
+                throw Exception(parseErrorMessage(response, "Failed to fetch user"))
             }
         }.onFailure {
             Log.e("UserRepositoryImpl", "Error fetching current user", it)
@@ -40,7 +40,7 @@ class UserRepositoryImpl @Inject constructor(
             if (response.isSuccessful && response.body() != null) {
                 response.body()!!
             } else {
-                throw Exception("Failed to sync contacts: ${response.message()}")
+                throw Exception(parseErrorMessage(response, "Failed to sync contacts"))
             }
         }.onFailure {
             Log.e("UserRepositoryImpl", "Error syncing contacts", it)
@@ -62,7 +62,7 @@ class UserRepositoryImpl @Inject constructor(
             if (response.isSuccessful && response.body() != null) {
                 response.body()!!
             } else {
-                throw Exception("Failed to update profile: ${response.message()}")
+                throw Exception(parseErrorMessage(response, "Failed to update profile"))
             }
         }.onFailure {
             Log.e("UserRepositoryImpl", "Error updating profile", it)
@@ -75,7 +75,7 @@ class UserRepositoryImpl @Inject constructor(
             if (response.isSuccessful && response.body() != null) {
                 response.body()!!
             } else {
-                throw Exception("Failed to fetch settings: ${response.message()}")
+                throw Exception(parseErrorMessage(response, "Failed to fetch settings"))
             }
         }.onFailure {
             Log.e("UserRepositoryImpl", "Error fetching settings", it)
@@ -103,10 +103,30 @@ class UserRepositoryImpl @Inject constructor(
             if (response.isSuccessful && response.body() != null) {
                 response.body()!!
             } else {
-                throw Exception("Failed to update settings: ${response.message()}")
+                throw Exception(parseErrorMessage(response, "Failed to update settings"))
             }
         }.onFailure {
             Log.e("UserRepositoryImpl", "Error updating settings", it)
         }
+    }
+
+    /** See the identical helper in ChatRepositoryImpl for why this replaced response.message(). */
+    private fun parseErrorMessage(response: retrofit2.Response<*>, fallback: String): String {
+        val bodyText = try {
+            response.errorBody()?.string()
+        } catch (e: Exception) {
+            null
+        }
+        if (!bodyText.isNullOrBlank()) {
+            try {
+                val json = org.json.JSONObject(bodyText)
+                if (json.has("message")) {
+                    return json.getString("message")
+                }
+            } catch (e: Exception) {
+                // Not JSON - fall through to the generic fallback below.
+            }
+        }
+        return "$fallback (HTTP ${response.code()})"
     }
 }

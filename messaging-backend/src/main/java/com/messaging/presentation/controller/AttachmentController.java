@@ -69,7 +69,16 @@ public class AttachmentController {
             if (!Files.exists(filePath)) {
                 filePath = this.fileStorageLocation.resolve(decodedName).normalize();
             }
-            
+
+            // Path-traversal guard: resolve()+normalize() alone does NOT stop a crafted name
+            // like "../../../../etc/passwd" (or its URL-encoded form) from escaping the uploads
+            // directory - normalize() only collapses the "../" segments, it doesn't forbid the
+            // result from landing outside fileStorageLocation. Without this check, this endpoint
+            // could be used to read arbitrary files readable by the server process.
+            if (!filePath.startsWith(this.fileStorageLocation)) {
+                return ResponseEntity.badRequest().build();
+            }
+
             Resource resource = new UrlResource(filePath.toUri());
             
             if (resource.exists() && resource.isReadable()) {

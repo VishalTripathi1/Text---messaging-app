@@ -46,7 +46,11 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST, "/v1/auth/refresh-token").permitAll()
                 .requestMatchers(HttpMethod.POST, "/v1/auth/validate-token").permitAll()
                 .requestMatchers("/v1/health").permitAll()
-                .requestMatchers("/v1/attachments/**").permitAll()
+                // Only the download route needs to stay anonymous (attachments are fetched via
+                // plain image/video URLs). The upload route was previously covered by the same
+                // "/v1/attachments/**" wildcard, which meant anyone on the internet - no login
+                // required - could upload arbitrary files to the server.
+                .requestMatchers(HttpMethod.GET, "/v1/attachments/download/**").permitAll()
                 .requestMatchers("/swagger-ui/**", "/v3/api-docs/**", "/swagger-ui.html").permitAll()
                 .requestMatchers("/ws/**").permitAll()
                 .anyRequest().authenticated()

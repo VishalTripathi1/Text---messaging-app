@@ -66,11 +66,23 @@ class MessagingFirebaseService : FirebaseMessagingService() {
         val title = remoteMessage.notification?.title ?: remoteMessage.data["title"] ?: "New Message"
         val body = remoteMessage.notification?.body ?: remoteMessage.data["body"] ?: ""
 
-        showNotification(title, body)
+        // The backend already includes chatId/groupId in the FCM data payload (see
+        // MessageServiceImpl.sendMessage) but this was never read on the client, so tapping a
+        // notification just opened the app to whatever screen it happened to start on instead
+        // of the specific chat the message belongs to. Groups are addressed as a negative
+        // chatId throughout the app (see ChatMapper) so we mirror that convention here.
+        val type = remoteMessage.data["type"]
+        val deepLinkChatId: Long? = when (type) {
+            "CHAT_MESSAGE" -> remoteMessage.data["chatId"]?.toLongOrNull()
+            "GROUP_MESSAGE" -> remoteMessage.data["groupId"]?.toLongOrNull()?.let { -it }
+            else -> null
+        }
+
+        showNotification(title, body, deepLinkChatId)
     }
 
     @SuppressLint("NotificationPermission")
-    private fun showNotification(title: String, body: String) {
+    private fun showNotification(title: String, body: String, deepLinkChatId: Long?) {
         val channelId = "chat_messages_channel"
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
@@ -87,9 +99,19 @@ class MessagingFirebaseService : FirebaseMessagingService() {
 
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            if (deepLinkChatId != null) {
+                putExtra(MainActivity.EXTRA_DEEP_LINK_CHAT_ID, deepLinkChatId)
+            }
         }
+        // The requestCode was previously hardcoded to 0 for every notification, which meant
+        // every notification's PendingIntent could be conflated as "the same" by the system -
+        // tapping any of them could resolve to a stale intent from a different chat rather than
+        // the one that was actually tapped. Using the chatId (falling back to a value derived
+        // from the current time so unrelated notifications still get distinct request codes)
+        // keeps each notification's PendingIntent genuinely unique.
+        val requestCode = deepLinkChatId?.hashCode() ?: System.currentTimeMillis().toInt()
         val pendingIntent = PendingIntent.getActivity(
-            this, 0, intent,
+            this, requestCode, intent,
             PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
         )
 

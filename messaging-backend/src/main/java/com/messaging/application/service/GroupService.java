@@ -12,9 +12,9 @@ public interface GroupService {
     
     List<GroupResponse> getUserGroups(Long userId, int page, int size);
     
-    GroupResponse getGroupDetails(Long groupId);
+    GroupResponse getGroupDetails(Long requesterId, Long groupId);
     
-    void addMembers(Long groupId, List<Long> userIds);
+    void addMembers(Long requesterId, Long groupId, List<Long> userIds);
     
-    void removeMember(Long groupId, Long userId);
+    void removeMember(Long requesterId, Long groupId, Long userId);
 }
