@@ -111,7 +111,9 @@ public class ChatController {
             @PathVariable("messageId") Long messageId,
             @RequestParam("text") String text
     ) {
-        MessageResponse message = messageService.editMessage(principal.getId(), messageId, text);
+        Long userId = principal.getId();
+        MessageResponse message = messageService.editMessage(userId, messageId, text);
+        notifyMessageUpdate(userId, message);
         return ResponseEntity.ok(message);
     }
 
@@ -120,8 +122,38 @@ public class ChatController {
             @AuthenticationPrincipal CustomUserPrincipal principal,
             @PathVariable("messageId") Long messageId
     ) {
-        MessageResponse message = messageService.deleteMessage(principal.getId(), messageId);
+        Long userId = principal.getId();
+        MessageResponse message = messageService.deleteMessage(userId, messageId);
+        notifyMessageUpdate(userId, message);
         return ResponseEntity.ok(message);
+    }
+
+    private void notifyMessageUpdate(Long senderId, MessageResponse response) {
+        try {
+            Long recipientId = null;
+            if (response.getChatId() != null) {
+                Chat chat = chatRepository.findById(response.getChatId()).orElse(null);
+                if (chat != null) {
+                    recipientId = chat.getUser1().getId().equals(senderId) ? chat.getUser2().getId() : chat.getUser1().getId();
+                }
+            }
+
+            WebSocketMessage outbound = WebSocketMessage.builder()
+                    .type("CHAT_MESSAGE")
+                    .senderId(senderId)
+                    .recipientId(recipientId)
+                    .chatId(response.getChatId())
+                    .groupId(response.getGroupId())
+                    .payload(response)
+                    .build();
+
+            String json = objectMapper.writeValueAsString(outbound);
+            if (recipientId != null) {
+                ChatWebSocketHandler.sendToUserStatic(recipientId, json);
+            }
+        } catch (Exception e) {
+            log.error("Failed to broadcast message update for messageId {}: {}", response.getId(), e.getMessage());
+        }
     }
 
     @PostMapping("/message/{messageId}/react")
