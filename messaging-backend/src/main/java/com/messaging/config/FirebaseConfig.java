@@ -6,16 +6,13 @@ import com.google.firebase.FirebaseOptions;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Configuration;
 
-import jakarta.annotation.PostConstruct;
-import java.io.FileInputStream;
-import java.io.InputStream;
+import javax.annotation.PostConstruct;
+import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
 
 @Configuration
 @Slf4j
 public class FirebaseConfig {
-
-    private static final String FIREBASE_CREDENTIALS_PATH =
-            "/etc/secrets/firebase-service-account.json";
 
     @PostConstruct
     public void initialize() {
@@ -25,19 +22,24 @@ public class FirebaseConfig {
                 return;
             }
 
-            try (InputStream serviceAccount =
-                         new FileInputStream(FIREBASE_CREDENTIALS_PATH)) {
+            String firebaseJson = System.getenv("FIREBASE_SERVICE_ACCOUNT_JSON");
+
+            if (firebaseJson == null || firebaseJson.isBlank()) {
+                log.warn("FIREBASE_SERVICE_ACCOUNT_JSON environment variable not found. Push notifications will be disabled.");
+                return;
+            }
+
+            try (ByteArrayInputStream serviceAccount =
+                         new ByteArrayInputStream(
+                                 firebaseJson.getBytes(StandardCharsets.UTF_8))) {
 
                 FirebaseOptions options = FirebaseOptions.builder()
-                        .setCredentials(
-                                GoogleCredentials.fromStream(serviceAccount)
-                        )
+                        .setCredentials(GoogleCredentials.fromStream(serviceAccount))
                         .build();
 
                 FirebaseApp.initializeApp(options);
 
                 log.info("Firebase Application has been initialized successfully.");
-
             }
 
         } catch (Exception e) {
