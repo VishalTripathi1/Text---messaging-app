@@ -4,7 +4,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.messaging.application.service.MessageService;
 import com.messaging.domain.dto.request.MessageRequest;
 import com.messaging.domain.dto.response.MessageResponse;
+import com.messaging.domain.entity.DeliveryStatus;
 import com.messaging.domain.entity.UserProfile;
+import com.messaging.infrastructure.repository.DeliveryStatusRepository;
 import com.messaging.infrastructure.repository.GroupRepository;
 import com.messaging.infrastructure.repository.UserProfileRepository;
 import lombok.RequiredArgsConstructor;
@@ -33,6 +35,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     private final MessageService messageService;
     private final UserProfileRepository userProfileRepository;
     private final GroupRepository groupRepository;
+    private final DeliveryStatusRepository deliveryStatusRepository;
 
     // Thread-safe map of active WebSocket connections
     private static final Map<Long, WebSocketSession> userSessions = new ConcurrentHashMap<>();
@@ -46,6 +49,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             
             updateUserStatus(userId, UserProfile.UserStatus.ONLINE);
             broadcastStatus(userId, "ONLINE");
+            processPendingDeliveries(userId);
         }
     }
 
@@ -217,5 +221,32 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             }
             userProfileRepository.save(profile);
         });
+    }
+
+    private void processPendingDeliveries(Long recipientId) {
+        List<DeliveryStatus> pendingList = deliveryStatusRepository.findByRecipientIdAndStatus(
+                recipientId, DeliveryStatus.DeliveryStatusType.PENDING);
+
+        for (DeliveryStatus status : pendingList) {
+            status.setStatus(DeliveryStatus.DeliveryStatusType.DELIVERED);
+            status.setDeliveredAt(LocalDateTime.now());
+            deliveryStatusRepository.save(status);
+
+            Long senderId = status.getMessage().getSender().getId();
+            Long chatId = status.getMessage().getChat() != null ? status.getMessage().getChat().getId() : null;
+
+            try {
+                WebSocketMessage deliveryMsg = WebSocketMessage.builder()
+                        .type("DELIVERY_STATUS")
+                        .senderId(recipientId)
+                        .recipientId(senderId)
+                        .chatId(chatId)
+                        .payload(Map.of("messageId", status.getMessage().getId(), "status", "DELIVERED"))
+                        .build();
+                sendToUser(senderId, objectMapper.writeValueAsString(deliveryMsg));
+            } catch (Exception e) {
+                log.error("Failed to notify sender {} of pending delivery: {}", senderId, e.getMessage());
+            }
+        }
     }
 }

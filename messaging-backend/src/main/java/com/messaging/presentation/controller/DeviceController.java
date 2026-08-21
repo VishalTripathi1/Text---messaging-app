@@ -13,7 +13,7 @@ import org.springframework.web.bind.annotation.*;
  * DeviceController - REST endpoints for registering FCM push notification tokens
  */
 @RestController
-@RequestMapping("/api/v1/devices")
+@RequestMapping("/v1/devices")
 @RequiredArgsConstructor
 public class DeviceController {
 
