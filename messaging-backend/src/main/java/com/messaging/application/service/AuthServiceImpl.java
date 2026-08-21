@@ -19,7 +19,14 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * AuthServiceImpl - Implementation of AuthService for managing user sessions and authentication
+ * AuthServiceImpl
+ *
+ * Handles:
+ *  - user registration
+ *  - login
+ *  - access-token refresh
+ *  - token validation
+ *  - logout
  */
 @Slf4j
 @Service
@@ -36,73 +43,139 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     @Transactional
-    public AuthResponse register(RegisterRequest request) {
-        log.info("Registering new user: {}", request.getUsername());
+    public AuthResponse register(
+            RegisterRequest request
+    ) {
 
-        if (userRepository.existsByUsername(request.getUsername())) {
-            throw new BadRequestException("Username is already taken");
+        log.info(
+                "Registering new user: {}",
+                request.getUsername()
+        );
+
+        if (
+                userRepository.existsByUsername(
+                        request.getUsername()
+                )
+        ) {
+            throw new BadRequestException(
+                    "Username is already taken"
+            );
         }
 
-        if (userRepository.existsByEmail(request.getEmail())) {
-            throw new BadRequestException("Email is already registered");
+        if (
+                userRepository.existsByEmail(
+                        request.getEmail()
+                )
+        ) {
+            throw new BadRequestException(
+                    "Email is already registered"
+            );
         }
 
         // 1. Create User
         User user = User.builder()
                 .username(request.getUsername())
                 .email(request.getEmail())
-                .passwordHash(passwordEncoder.encode(request.getPassword()))
-                .phoneNumber(request.getPhoneNumber())
+                .passwordHash(
+                        passwordEncoder.encode(
+                                request.getPassword()
+                        )
+                )
+                .phoneNumber(
+                        request.getPhoneNumber()
+                )
                 .isActive(true)
                 .build();
+
         user = userRepository.save(user);
 
         // 2. Create UserProfile
-        UserProfile profile = UserProfile.builder()
-                .user(user)
-                .displayName(request.getDisplayName())
-                .status(UserProfile.UserStatus.OFFLINE)
-                .isVerified(false)
-                .build();
+        UserProfile profile =
+                UserProfile.builder()
+                        .user(user)
+                        .displayName(
+                                request.getDisplayName()
+                        )
+                        .status(
+                                UserProfile.UserStatus.OFFLINE
+                        )
+                        .isVerified(false)
+                        .build();
+
         userProfileRepository.save(profile);
 
         // 3. Create UserSettings
-        UserSettings settings = UserSettings.builder()
-                .user(user)
-                .theme("LIGHT")
-                .notificationsEnabled(true)
-                .soundEnabled(true)
-                .vibrationEnabled(true)
-                .showReadReceipts(true)
-                .showTypingIndicator(true)
-                .build();
+        UserSettings settings =
+                UserSettings.builder()
+                        .user(user)
+                        .theme("LIGHT")
+                        .notificationsEnabled(true)
+                        .soundEnabled(true)
+                        .vibrationEnabled(true)
+                        .showReadReceipts(true)
+                        .showTypingIndicator(true)
+                        .build();
+
         userSettingsRepository.save(settings);
 
-        // 4. Create default Device for session mapping
-        String defaultDeviceId = "reg_" + UUID.randomUUID().toString().substring(0, 8);
-        Device device = Device.builder()
-                .user(user)
-                .deviceId(defaultDeviceId)
-                .deviceName("Default Registration Device")
-                .deviceType("UNKNOWN")
-                .isActive(true)
-                .lastActive(LocalDateTime.now())
-                .build();
+        // 4. Create default Device
+        String defaultDeviceId =
+                "reg_" +
+                UUID.randomUUID()
+                        .toString()
+                        .substring(0, 8);
+
+        Device device =
+                Device.builder()
+                        .user(user)
+                        .deviceId(defaultDeviceId)
+                        .deviceName(
+                                "Default Registration Device"
+                        )
+                        .deviceType("UNKNOWN")
+                        .isActive(true)
+                        .lastActive(
+                                LocalDateTime.now()
+                        )
+                        .build();
+
         deviceRepository.save(device);
 
         // 5. Generate tokens
-        String accessToken = jwtProvider.generateAccessToken(user.getId(), user.getUsername());
-        String refreshToken = jwtProvider.generateRefreshToken(user.getId(), user.getUsername());
+        String accessToken =
+                jwtProvider.generateAccessToken(
+                        user.getId(),
+                        user.getUsername()
+                );
+
+        String refreshToken =
+                jwtProvider.generateRefreshToken(
+                        user.getId(),
+                        user.getUsername()
+                );
 
         // 6. Create Session
-        LocalDateTime expiryDate = LocalDateTime.now().plusNanos(jwtProvider.getTokenExpirationTime() * 1000000);
-        Session session = Session.builder()
-                .user(user)
-                .device(device)
-                .token(accessToken)
-                .refreshToken(refreshToken)
-                .expiresAt(expiryDate)
-                .build();
+        //
+        // IMPORTANT:
+        // Session lifetime must follow the refresh token,
+        // NOT the short-lived access token.
+        LocalDateTime expiryDate =
+                LocalDateTime.now()
+                        .plusNanos(
+                                jwtProvider
+                                        .getRefreshTokenExpirationTime()
+                                        * 1_000_000
+                        );
+
+        Session session =
+                Session.builder()
+                        .user(user)
+                        .device(device)
+                        .token(accessToken)
+                        .refreshToken(refreshToken)
+                        .expiresAt(expiryDate)
+                        .build();
+
         sessionRepository.save(session);
 
         return AuthResponse.builder()
@@ -111,58 +184,136 @@ public class AuthServiceImpl implements AuthService {
                 .email(user.getEmail())
                 .accessToken(accessToken)
                 .refreshToken(refreshToken)
-                .expiresIn(jwtProvider.getTokenExpirationTime() / 1000)
+                .expiresIn(
+                        jwtProvider
+                                .getTokenExpirationTime()
+                                / 1000
+                )
                 .build();
     }
 
     @Override
     @Transactional
-    public AuthResponse login(LoginRequest request) {
-        log.info("Logging in user: {}", request.getUsername());
+    public AuthResponse login(
+            LoginRequest request
+    ) {
 
-        User user = userRepository.findByUsername(request.getUsername())
-                .orElseThrow(() -> new BadCredentialsException("Invalid username or password"));
+        log.info(
+                "Logging in user: {}",
+                request.getUsername()
+        );
+
+        User user =
+                userRepository
+                        .findByUsername(
+                                request.getUsername()
+                        )
+                        .orElseThrow(
+                                () ->
+                                        new BadCredentialsException(
+                                                "Invalid username or password"
+                                        )
+                        );
 
         if (!user.getIsActive()) {
-            throw new BadRequestException("User account is deactivated");
+            throw new BadRequestException(
+                    "User account is deactivated"
+            );
         }
 
-        if (!passwordEncoder.matches(request.getPassword(), user.getPasswordHash())) {
-            throw new BadCredentialsException("Invalid username or password");
+        if (
+                !passwordEncoder.matches(
+                        request.getPassword(),
+                        user.getPasswordHash()
+                )
+        ) {
+            throw new BadCredentialsException(
+                    "Invalid username or password"
+            );
         }
 
-        // 1. Get or Create Device
-        Device device = deviceRepository.findByDeviceId(request.getDeviceId())
-                .orElseGet(() -> Device.builder()
-                        .user(user)
-                        .deviceId(request.getDeviceId())
-                        .deviceName(request.getDeviceName() != null ? request.getDeviceName() : "Unknown Device")
-                        .deviceType("ANDROID")
-                        .isActive(true)
-                        .build());
-        
-        device.setLastActive(LocalDateTime.now());
+        // 1. Get or create device
+        Device device =
+                deviceRepository
+                        .findByDeviceId(
+                                request.getDeviceId()
+                        )
+                        .orElseGet(
+                                () ->
+                                        Device.builder()
+                                                .user(user)
+                                                .deviceId(
+                                                        request.getDeviceId()
+                                                )
+                                                .deviceName(
+                                                        request.getDeviceName() != null
+                                                                ? request.getDeviceName()
+                                                                : "Unknown Device"
+                                                )
+                                                .deviceType("ANDROID")
+                                                .isActive(true)
+                                                .build()
+                        );
+
+        device.setLastActive(
+                LocalDateTime.now()
+        );
+
         device.setIsActive(true);
-        device = deviceRepository.save(device);
+
+        device =
+                deviceRepository.save(device);
 
         // 2. Generate tokens
-        String accessToken = jwtProvider.generateAccessToken(user.getId(), user.getUsername());
-        String refreshToken = jwtProvider.generateRefreshToken(user.getId(), user.getUsername());
+        String accessToken =
+                jwtProvider.generateAccessToken(
+                        user.getId(),
+                        user.getUsername()
+                );
 
-        // 3. Create/Update Session
-        // Remove existing sessions for this device to maintain one active session per device
-        sessionRepository.findByUserId(user.getId()).stream()
-                .filter(s -> s.getDevice().getDeviceId().equals(request.getDeviceId()))
-                .forEach(sessionRepository::delete);
+        String refreshToken =
+                jwtProvider.generateRefreshToken(
+                        user.getId(),
+                        user.getUsername()
+                );
 
-        LocalDateTime expiryDate = LocalDateTime.now().plusNanos(jwtProvider.getTokenExpirationTime() * 1000000);
-        Session session = Session.builder()
-                .user(user)
-                .device(device)
-                .token(accessToken)
-                .refreshToken(refreshToken)
-                .expiresAt(expiryDate)
-                .build();
+        // 3. Remove existing session for this device
+        sessionRepository
+                .findByUserId(user.getId())
+                .stream()
+                .filter(
+                        s ->
+                                s.getDevice()
+                                        .getDeviceId()
+                                        .equals(
+                                                request.getDeviceId()
+                                        )
+                )
+                .forEach(
+                        sessionRepository::delete
+                );
+
+        // 4. Create session
+        //
+        // IMPORTANT:
+        // Use refresh-token expiration for session lifetime.
+        LocalDateTime expiryDate =
+                LocalDateTime.now()
+                        .plusNanos(
+                                jwtProvider
+                                        .getRefreshTokenExpirationTime()
+                                        * 1_000_000
+                        );
+
+        Session session =
+                Session.builder()
+                        .user(user)
+                        .device(device)
+                        .token(accessToken)
+                        .refreshToken(refreshToken)
+                        .expiresAt(expiryDate)
+                        .build();
+
         sessionRepository.save(session);
 
         return AuthResponse.builder()
@@ -171,38 +322,116 @@ public class AuthServiceImpl implements AuthService {
                 .email(user.getEmail())
                 .accessToken(accessToken)
                 .refreshToken(refreshToken)
-                .expiresIn(jwtProvider.getTokenExpirationTime() / 1000)
+                .expiresIn(
+                        jwtProvider
+                                .getTokenExpirationTime()
+                                / 1000
+                )
                 .build();
     }
 
     @Override
     @Transactional
-    public AuthResponse refreshToken(String refreshToken) {
-        log.info("Refreshing token");
+    public AuthResponse refreshToken(
+            String refreshToken
+    ) {
 
-        if (!jwtProvider.validateToken(refreshToken)) {
-            throw new BadRequestException("Invalid or expired refresh token");
+        log.info(
+                "Refreshing token"
+        );
+
+        if (
+                refreshToken == null ||
+                refreshToken.isBlank()
+        ) {
+            throw new BadRequestException(
+                    "Refresh token is required"
+            );
         }
 
-        Session session = sessionRepository.findByRefreshToken(refreshToken)
-                .orElseThrow(() -> new BadRequestException("Active session not found for refresh token"));
-
-        if (session.getExpiresAt().isBefore(LocalDateTime.now())) {
-            sessionRepository.delete(session);
-            throw new BadRequestException("Session has expired. Please login again.");
+        // Validate JWT itself.
+        if (
+                !jwtProvider.validateToken(
+                        refreshToken
+                )
+        ) {
+            throw new BadRequestException(
+                    "Invalid or expired refresh token"
+            );
         }
 
-        User user = session.getUser();
-        
-        // Generate new tokens (Refresh Token Rotation)
-        String newAccessToken = jwtProvider.generateAccessToken(user.getId(), user.getUsername());
-        String newRefreshToken = jwtProvider.generateRefreshToken(user.getId(), user.getUsername());
+        // Find active session.
+        Session session =
+                sessionRepository
+                        .findByRefreshToken(
+                                refreshToken
+                        )
+                        .orElseThrow(
+                                () ->
+                                        new BadRequestException(
+                                                "Active session not found for refresh token"
+                                        )
+                        );
 
-        // Update current session
-        session.setToken(newAccessToken);
-        session.setRefreshToken(newRefreshToken);
-        session.setExpiresAt(LocalDateTime.now().plusNanos(jwtProvider.getTokenExpirationTime() * 1000000));
-        sessionRepository.save(session);
+        // Check database session expiration.
+        if (
+                session.getExpiresAt()
+                        .isBefore(
+                                LocalDateTime.now()
+                        )
+        ) {
+
+            sessionRepository.delete(
+                    session
+            );
+
+            throw new BadRequestException(
+                    "Session has expired. Please login again."
+            );
+        }
+
+        User user =
+                session.getUser();
+
+        // Generate new tokens.
+        //
+        // Refresh-token rotation:
+        // the old refresh token becomes invalid after this.
+        String newAccessToken =
+                jwtProvider.generateAccessToken(
+                        user.getId(),
+                        user.getUsername()
+                );
+
+        String newRefreshToken =
+                jwtProvider.generateRefreshToken(
+                        user.getId(),
+                        user.getUsername()
+                );
+
+        // Update current session.
+        session.setToken(
+                newAccessToken
+        );
+
+        session.setRefreshToken(
+                newRefreshToken
+        );
+
+        // IMPORTANT:
+        // New session expiration follows the new refresh token.
+        session.setExpiresAt(
+                LocalDateTime.now()
+                        .plusNanos(
+                                jwtProvider
+                                        .getRefreshTokenExpirationTime()
+                                        * 1_000_000
+                        )
+        );
+
+        sessionRepository.save(
+                session
+        );
 
         return AuthResponse.builder()
                 .userId(user.getId())
@@ -210,32 +439,64 @@ public class AuthServiceImpl implements AuthService {
                 .email(user.getEmail())
                 .accessToken(newAccessToken)
                 .refreshToken(newRefreshToken)
-                .expiresIn(jwtProvider.getTokenExpirationTime() / 1000)
+                .expiresIn(
+                        jwtProvider
+                                .getTokenExpirationTime()
+                                / 1000
+                )
                 .build();
     }
 
     @Override
-    public boolean validateToken(String token) {
-        return jwtProvider.validateToken(token) && sessionRepository.findByToken(token).isPresent();
+    public boolean validateToken(
+            String token
+    ) {
+
+        return jwtProvider.validateToken(
+                token
+        )
+                &&
+                sessionRepository
+                        .findByToken(token)
+                        .isPresent();
     }
 
     @Override
     @Transactional
-    public void logout(String token) {
-        log.info("Logging out user session");
-        
-        Optional<Session> sessionOpt = sessionRepository.findByToken(token);
+    public void logout(
+            String token
+    ) {
+
+        log.info(
+                "Logging out user session"
+        );
+
+        Optional<Session> sessionOpt =
+                sessionRepository
+                        .findByToken(token);
+
         if (sessionOpt.isPresent()) {
-            Session session = sessionOpt.get();
-            
-            // Set device to inactive
-            Device device = session.getDevice();
+
+            Session session =
+                    sessionOpt.get();
+
+            Device device =
+                    session.getDevice();
+
             if (device != null) {
-                device.setIsActive(false);
-                deviceRepository.save(device);
+
+                device.setIsActive(
+                        false
+                );
+
+                deviceRepository.save(
+                        device
+                );
             }
-            
-            sessionRepository.delete(session);
+
+            sessionRepository.delete(
+                    session
+            );
         }
     }
 }

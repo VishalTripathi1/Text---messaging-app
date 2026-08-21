@@ -1,40 +1,52 @@
 package com.messaging.di
 
 import android.content.Context
+import com.google.gson.Gson
 import com.messaging.data.datasource.remote.AuthApiService
+import com.messaging.data.datasource.remote.AuthInterceptor
+import com.messaging.data.datasource.remote.ChatApiService
+import com.messaging.data.datasource.remote.TokenAuthenticator
+import com.messaging.data.datasource.remote.TokenRefreshManager
+import com.messaging.data.datasource.remote.WebSocketClient
+import com.messaging.util.Constants
 import com.messaging.util.TokenManager
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
-import com.google.gson.Gson
-import com.messaging.data.datasource.remote.AuthInterceptor
-import com.messaging.data.datasource.remote.ChatApiService
-import com.messaging.data.datasource.remote.TokenAuthenticator
-import com.messaging.data.datasource.remote.WebSocketClient
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.util.concurrent.TimeUnit
+import javax.inject.Qualifier
 import javax.inject.Singleton
 
-import com.messaging.util.Constants
-
-/** Qualifier for the internal OkHttpClient used only for token-refresh calls. */
-@javax.inject.Qualifier
+/**
+ * Qualifier for the internal OkHttpClient used only for token-refresh calls.
+ */
+@Qualifier
 @Retention(AnnotationRetention.BINARY)
 annotation class PlainOkHttpClient
 
 /**
- * NetworkModule - Configures network clients and Retrofit API declarations
+ * NetworkModule
+ *
+ * Configures:
+ *  - Retrofit
+ *  - OkHttp
+ *  - authentication interceptor
+ *  - token authenticator
+ *  - token refresh manager
+ *  - WebSocket client
  */
 @Module
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
 
-    private val BASE_URL = Constants.BASE_URL
+    private val BASE_URL =
+        Constants.BASE_URL
 
     @Singleton
     @Provides
@@ -60,15 +72,23 @@ object NetworkModule {
 
     @Singleton
     @Provides
-    fun provideLoggingInterceptor(): HttpLoggingInterceptor {
+    fun provideLoggingInterceptor():
+            HttpLoggingInterceptor {
+
         return HttpLoggingInterceptor().apply {
             level = HttpLoggingInterceptor.Level.BODY
         }
     }
 
     /**
-     * A bare client (no auth interceptor/authenticator) used internally by [TokenAuthenticator]
-     * to call the refresh-token endpoint without recursing back into itself.
+     * Bare OkHttp client.
+     *
+     * This client intentionally does NOT contain:
+     *  - AuthInterceptor
+     *  - TokenAuthenticator
+     *
+     * Otherwise the refresh-token request could recursively
+     * trigger another token refresh.
      */
     @Singleton
     @Provides
@@ -76,23 +96,59 @@ object NetworkModule {
     fun providePlainOkHttpClient(
         loggingInterceptor: HttpLoggingInterceptor
     ): OkHttpClient {
+
         return OkHttpClient.Builder()
             .addInterceptor(loggingInterceptor)
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
-            .writeTimeout(15, TimeUnit.SECONDS)
+            .connectTimeout(
+                15,
+                TimeUnit.SECONDS
+            )
+            .readTimeout(
+                15,
+                TimeUnit.SECONDS
+            )
+            .writeTimeout(
+                15,
+                TimeUnit.SECONDS
+            )
             .build()
     }
 
+    /**
+     * Shared token refresh manager.
+     */
+    @Singleton
+    @Provides
+    fun provideTokenRefreshManager(
+        tokenManager: TokenManager,
+        @PlainOkHttpClient plainOkHttpClient: OkHttpClient,
+        gson: Gson
+    ): TokenRefreshManager {
+
+        return TokenRefreshManager(
+            tokenManager = tokenManager,
+            plainOkHttpClient = plainOkHttpClient,
+            gson = gson
+        )
+    }
+
+    /**
+     * Handles expired JWT access tokens for normal HTTP requests.
+     */
     @Singleton
     @Provides
     fun provideTokenAuthenticator(
-        tokenManager: TokenManager,
-        @PlainOkHttpClient plainOkHttpClient: OkHttpClient
+        tokenRefreshManager: TokenRefreshManager
     ): TokenAuthenticator {
-        return TokenAuthenticator(tokenManager) { plainOkHttpClient }
+
+        return TokenAuthenticator(
+            tokenRefreshManager
+        )
     }
 
+    /**
+     * Main authenticated OkHttp client.
+     */
     @Singleton
     @Provides
     fun provideOkHttpClient(
@@ -100,13 +156,23 @@ object NetworkModule {
         authInterceptor: AuthInterceptor,
         tokenAuthenticator: TokenAuthenticator
     ): OkHttpClient {
+
         return OkHttpClient.Builder()
             .addInterceptor(authInterceptor)
             .addInterceptor(loggingInterceptor)
             .authenticator(tokenAuthenticator)
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
-            .writeTimeout(15, TimeUnit.SECONDS)
+            .connectTimeout(
+                15,
+                TimeUnit.SECONDS
+            )
+            .readTimeout(
+                15,
+                TimeUnit.SECONDS
+            )
+            .writeTimeout(
+                15,
+                TimeUnit.SECONDS
+            )
             .build()
     }
 
@@ -115,10 +181,13 @@ object NetworkModule {
     fun provideRetrofit(
         okHttpClient: OkHttpClient
     ): Retrofit {
+
         return Retrofit.Builder()
             .baseUrl(BASE_URL)
             .client(okHttpClient)
-            .addConverterFactory(GsonConverterFactory.create())
+            .addConverterFactory(
+                GsonConverterFactory.create()
+            )
             .build()
     }
 
@@ -127,7 +196,10 @@ object NetworkModule {
     fun provideAuthApiService(
         retrofit: Retrofit
     ): AuthApiService {
-        return retrofit.create(AuthApiService::class.java)
+
+        return retrofit.create(
+            AuthApiService::class.java
+        )
     }
 
     @Singleton
@@ -135,7 +207,10 @@ object NetworkModule {
     fun provideChatApiService(
         retrofit: Retrofit
     ): ChatApiService {
-        return retrofit.create(ChatApiService::class.java)
+
+        return retrofit.create(
+            ChatApiService::class.java
+        )
     }
 
     @Singleton
@@ -143,8 +218,15 @@ object NetworkModule {
     fun provideWebSocketClient(
         okHttpClient: OkHttpClient,
         tokenManager: TokenManager,
-        gson: Gson
+        gson: Gson,
+        tokenRefreshManager: TokenRefreshManager
     ): WebSocketClient {
-        return WebSocketClient(okHttpClient, tokenManager, gson)
+
+        return WebSocketClient(
+            okHttpClient = okHttpClient,
+            tokenManager = tokenManager,
+            gson = gson,
+            tokenRefreshManager = tokenRefreshManager
+        )
     }
 }
