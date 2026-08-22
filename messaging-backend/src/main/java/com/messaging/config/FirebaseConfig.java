@@ -16,42 +16,43 @@ public class FirebaseConfig {
 
     @PostConstruct
     public void initialize() {
-        java.util.concurrent.CompletableFuture.runAsync(() -> {
-            try {
-                if (!FirebaseApp.getApps().isEmpty()) {
-                    log.info("Firebase Application is already initialized.");
-                    return;
-                }
-
-                String firebaseJson = System.getenv("FIREBASE_SERVICE_ACCOUNT_JSON");
-
-                log.info(
-                        "Firebase env check: present={}, length={}",
-                        firebaseJson != null && !firebaseJson.isBlank(),
-                        firebaseJson == null ? 0 : firebaseJson.length()
-                );
-
-                if (firebaseJson == null || firebaseJson.isBlank()) {
-                    log.warn("FIREBASE_SERVICE_ACCOUNT_JSON environment variable not found. Push notifications will be disabled.");
-                    return;
-                }
-
-                try (ByteArrayInputStream serviceAccount =
-                             new ByteArrayInputStream(
-                                     firebaseJson.getBytes(StandardCharsets.UTF_8))) {
-
-                    FirebaseOptions options = FirebaseOptions.builder()
-                            .setCredentials(GoogleCredentials.fromStream(serviceAccount))
-                            .build();
-
-                    FirebaseApp.initializeApp(options);
-
-                    log.info("Firebase Application has been initialized successfully.");
-                }
-
-            } catch (Exception e) {
-                log.error("Failed to initialize Firebase: {}", e.getMessage(), e);
+        try {
+            if (!FirebaseApp.getApps().isEmpty()) {
+                log.info("Firebase Application is already initialized.");
+                return;
             }
-        });
+
+            String firebaseJson = System.getenv("FIREBASE_SERVICE_ACCOUNT_JSON");
+
+            log.info(
+                    "Firebase env check: present={}, length={}",
+                    firebaseJson != null && !firebaseJson.isBlank(),
+                    firebaseJson == null ? 0 : firebaseJson.length()
+            );
+
+            if (firebaseJson == null || firebaseJson.isBlank()) {
+                log.warn(
+                        "FIREBASE_SERVICE_ACCOUNT_JSON environment variable not found. " +
+                        "Push notifications will be disabled."
+                );
+                return;
+            }
+
+            try (ByteArrayInputStream serviceAccount =
+                         new ByteArrayInputStream(
+                                 firebaseJson.getBytes(StandardCharsets.UTF_8))) {
+
+                FirebaseOptions options = FirebaseOptions.builder()
+                        .setCredentials(GoogleCredentials.fromStream(serviceAccount))
+                        .build();
+
+                FirebaseApp.initializeApp(options);
+
+                log.info("Firebase Application has been initialized successfully.");
+            }
+
+        } catch (Exception e) {
+            log.error("Failed to initialize Firebase: {}", e.getMessage(), e);
+        }
     }
 }
