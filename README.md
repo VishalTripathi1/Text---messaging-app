@@ -141,6 +141,20 @@ Android Studio > File > Open > messaging-android
 
 3. **Sync Gradle** and run on emulator/device
 
+### Firebase Cloud Messaging setup
+
+Push notifications require Firebase configuration; the project deliberately does not contain
+secrets. The current workspace has neither Android's `app/google-services.json` nor the backend
+`FIREBASE_SERVICE_ACCOUNT_JSON` environment variable, so permission alone cannot produce a push.
+
+1. Create/select a Firebase project and add Android app ID `com.messaging`.
+2. Download its `google-services.json` into `messaging-android/app/`, add the Google Services
+   Gradle plugin, then rebuild the app.
+3. Run the backend with `FIREBASE_SERVICE_ACCOUNT_JSON` set to that project's service-account
+   JSON (keep it out of git).
+4. Test on a physical device or an AVD image labeled **Google Play** / **Google APIs**. A plain
+   system-image emulator cannot obtain an FCM registration token.
+
 ### Access
 
 - **Backend API**: `http://localhost:8080/api`

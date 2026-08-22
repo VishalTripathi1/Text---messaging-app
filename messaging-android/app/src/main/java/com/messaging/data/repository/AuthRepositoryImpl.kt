@@ -58,9 +58,16 @@ class AuthRepositoryImpl @Inject constructor(
             val response = authApiService.login(request)
             if (response.isSuccessful && response.body() != null) {
                 val authResponse = response.body()!!
-                withContext(Dispatchers.IO) {
-                    chatDao.deleteAllChats()
-                    messageDao.deleteAllMessages()
+                // Keep the on-device cache when the same user signs back in. Wiping it on
+                // every login made a reinstall/re-login appear to "load old messages" very
+                // slowly because Room had to be repopulated from the network before anything
+                // could render. We still clear it before switching to a different account.
+                val previousUserId = tokenManager.userId.first()
+                if (previousUserId != null && previousUserId != authResponse.userId) {
+                    withContext(Dispatchers.IO) {
+                        chatDao.deleteAllChats()
+                        messageDao.deleteAllMessages()
+                    }
                 }
                 tokenManager.saveTokens(
                     authResponse.accessToken,

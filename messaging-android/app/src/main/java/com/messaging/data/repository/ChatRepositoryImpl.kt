@@ -28,14 +28,12 @@ import com.messaging.util.TokenManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -259,62 +257,32 @@ class ChatRepositoryImpl @Inject constructor(
                 attachmentFileSize = attachmentFileSize
             )
             
-            val wsMessage = WebSocketMessage(
-                type = "CHAT_MESSAGE",
-                recipientId = actualRecipientId,
-                chatId = actualChatId,
-                groupId = actualGroupId,
-                payload = wsRequest
-            )
-            
-            val sent = webSocketClient.sendMessage(wsMessage)
-            if (sent) {
-                // webSocketClient.sendMessage() returning true only means the frame was handed
-                // to OkHttp's outgoing queue - it does NOT guarantee the server received or
-                // processed it (a dropped connection, a flaky network, or a backend error after
-                // this point are all invisible at this layer). Previously this just declared
-                // success and relied entirely on a WS echo-back to clear the "pending" (clock)
-                // message - if that echo never arrived, the message stayed stuck as pending
-                // forever with no automatic retry. Now we wait briefly for that echo, and if
-                // it doesn't show up in time we fall back to the HTTP path (below), which gives
-                // a definite DELIVERED or FAILED outcome instead of an indefinite pending state.
-                val confirmed = withTimeoutOrNull(6000) {
-                    while (messageDao.getMessageById(tempMessageId) != null) {
-                        delay(500)
-                    }
-                    true
-                } ?: false
+            // Persist through HTTP so the caller receives a definitive server response. A
+            // successful WebSocket send only means OkHttp queued a frame; it does not prove the
+            // server stored it, and waiting for an echo left senders permanently on PENDING when
+            // that echo was lost. The backend broadcasts this saved message to recipients.
+            val httpResp = chatApiService.sendHttpMessage(wsRequest)
+            if (httpResp.isSuccessful && httpResp.body() != null) {
+                val messageResp = httpResp.body()!!
+                messageDao.deleteMessageById(tempMessageId)
+                messageDao.insertMessage(messageResp.toEntity(messageResp.deliveryStatus ?: "SENT"))
 
-                if (confirmed) {
-                    return@withContext Result.success(Unit)
-                }
-                // Fall through to the HTTP fallback below for a guaranteed resolution.
-            }
-
-            run {
-                val httpResp = chatApiService.sendHttpMessage(wsRequest)
-                if (httpResp.isSuccessful && httpResp.body() != null) {
-                    val messageResp = httpResp.body()!!
-                    messageDao.deleteMessageById(tempMessageId)
-                    val entity = messageResp.toEntity("DELIVERED")
-                    messageDao.insertMessage(entity)
-                    
-                    val resolvedChatId = if (actualGroupId != null) -actualGroupId else actualChatId
-                    if (resolvedChatId != null) {
-                        val chat = chatDao.getChatById(resolvedChatId)
-                        if (chat != null) {
-                            chatDao.insertChat(chat.copy(
-                                lastMessageText = messageResp.messageText,
-                                lastMessageSenderId = messageResp.senderId,
-                                lastMessageAt = messageResp.createdAt.toEpochMillis()
-                            ))
-                        }
+                val confirmedChatId = if (actualGroupId != null) -actualGroupId else actualChatId
+                if (confirmedChatId != null) {
+                    val chat = chatDao.getChatById(confirmedChatId)
+                    if (chat != null) {
+                        chatDao.insertChat(chat.copy(
+                            lastMessageText = messageResp.messageText,
+                            lastMessageSenderId = messageResp.senderId,
+                            lastMessageStatus = messageResp.deliveryStatus ?: "SENT",
+                            lastMessageAt = messageResp.createdAt.toEpochMillis()
+                        ))
                     }
-                    Result.success(Unit)
-                } else {
-                    messageDao.updateDeliveryStatus(tempMessageId, "FAILED")
-                    Result.failure(Exception(parseErrorMessage(httpResp, "Failed to send message")))
                 }
+                Result.success(Unit)
+            } else {
+                messageDao.updateDeliveryStatus(tempMessageId, "FAILED")
+                Result.failure(Exception(parseErrorMessage(httpResp, "Failed to send message")))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -330,15 +298,8 @@ class ChatRepositoryImpl @Inject constructor(
             chatDao.resetUnreadCount(chatId)
             val response = chatApiService.markChatAsRead(chatId)
             if (response.isSuccessful) {
-                val chat = chatDao.getChatById(chatId)
-                if (chat != null && chat.otherUserId != null) {
-                    val wsMessage = WebSocketMessage(
-                        type = "READ_RECEIPT",
-                        chatId = chatId,
-                        recipientId = chat.otherUserId
-                    )
-                    webSocketClient.sendMessage(wsMessage)
-                }
+                // The REST endpoint records the receipt and broadcasts it. Sending another
+                // WebSocket receipt here created a duplicate race and inconsistent tick state.
                 Result.success(Unit)
             } else {
                 Result.failure(Exception(parseErrorMessage(response, "Failed to mark chat as read")))

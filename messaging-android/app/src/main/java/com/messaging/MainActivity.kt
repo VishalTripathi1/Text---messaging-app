@@ -19,6 +19,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.filterNotNull
 import timber.log.Timber
 import javax.inject.Inject
 
@@ -52,8 +53,14 @@ class MainActivity : ComponentActivity() {
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 101)
         }
 
-        // Safely fetch and register FCM push token
-        registerFcmToken()
+        // Register only after an authenticated token exists. On a fresh install the previous
+        // eager call ran before login, received 401, and was never retried; the server then had
+        // no device token to notify. Re-registering after a refresh is harmless (upsert).
+        lifecycleScope.launch {
+            tokenManager.accessToken.filterNotNull().collect {
+                registerFcmToken()
+            }
+        }
 
         readDeepLinkFromIntent(intent)
 

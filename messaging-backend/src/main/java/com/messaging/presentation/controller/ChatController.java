@@ -70,6 +70,9 @@ public class ChatController {
             @RequestBody MessageRequest request
     ) {
         MessageResponse message = messageService.sendMessage(principal.getId(), request);
+        // REST is the reliable persistence path used by Android. Broadcast the stored response
+        // exactly as the WebSocket send path does, so the recipient receives it in real time.
+        notifyMessageUpdate(principal.getId(), message, "CHAT_MESSAGE");
         return ResponseEntity.ok(message);
     }
 
@@ -172,7 +175,18 @@ public class ChatController {
                 if (chat != null) {
                     Long recipientId = chat.getUser1().getId().equals(senderId)
                             ? chat.getUser2().getId() : chat.getUser1().getId();
-                    ChatWebSocketHandler.sendToUserStatic(recipientId, json);
+                    boolean delivered = ChatWebSocketHandler.sendToUserStatic(recipientId, json);
+                    if (delivered && "CHAT_MESSAGE".equals(updateType)) {
+                        messageService.markMessageAsDelivered(recipientId, response.getId());
+                        WebSocketMessage deliveryUpdate = WebSocketMessage.builder()
+                                .type("DELIVERY_STATUS")
+                                .senderId(recipientId)
+                                .recipientId(senderId)
+                                .chatId(response.getChatId())
+                                .payload(java.util.Map.of("messageId", response.getId(), "status", "DELIVERED"))
+                                .build();
+                        ChatWebSocketHandler.sendToUserStatic(senderId, objectMapper.writeValueAsString(deliveryUpdate));
+                    }
                 }
             } else if (response.getGroupId() != null) {
                 // Previously this branch didn't exist at all - edits, deletes, and reactions on
