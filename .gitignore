@@ -20,6 +20,7 @@ messaging-android/app/build/
 messaging-android/*.iml
 messaging-android/local.properties
 messaging-android/.DS_Store
+messaging-android/app/google-services.json
 
 # General
 .DS_Store
