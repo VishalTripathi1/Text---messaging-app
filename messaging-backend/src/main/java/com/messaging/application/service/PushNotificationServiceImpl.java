@@ -31,14 +31,7 @@ public class PushNotificationServiceImpl implements PushNotificationService {
             return;
         }
 
-        // boolean isFirebaseInitialized = !FirebaseApp.getApps().isEmpty();
         boolean isFirebaseInitialized = !FirebaseApp.getApps().isEmpty();
-
-        log.info(
-            "Firebase debug: initialized={}, apps={}",
-            isFirebaseInitialized,
-            FirebaseApp.getApps().size()
-        );
 
         for (Device device : activeDevices) {
             String token = device.getFcmToken();
