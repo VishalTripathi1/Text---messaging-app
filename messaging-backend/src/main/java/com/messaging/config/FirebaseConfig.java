@@ -25,6 +25,12 @@ public class FirebaseConfig {
 
                 String firebaseJson = System.getenv("FIREBASE_SERVICE_ACCOUNT_JSON");
 
+                log.info(
+                        "Firebase env check: present={}, length={}",
+                        firebaseJson != null && !firebaseJson.isBlank(),
+                        firebaseJson == null ? 0 : firebaseJson.length()
+                );
+
                 if (firebaseJson == null || firebaseJson.isBlank()) {
                     log.warn("FIREBASE_SERVICE_ACCOUNT_JSON environment variable not found. Push notifications will be disabled.");
                     return;
