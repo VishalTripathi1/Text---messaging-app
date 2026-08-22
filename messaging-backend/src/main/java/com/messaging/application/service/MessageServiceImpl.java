@@ -107,15 +107,15 @@ public class MessageServiceImpl implements MessageService {
         User sender = userRepository.findById(senderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Sender not found"));
 
-        // No validation existed at all: empty/blank text messages were accepted, there was no
-        // length cap (a client bug or malicious request could store an arbitrarily large blob),
-        // and an invalid messageType would only fail later with an unhandled/opaque exception
-        // instead of a clear 400.
-        String allowedTypes = "TEXT,IMAGE,VIDEO,VOICE,DOCUMENT";
-        if (request.getMessageType() == null || !allowedTypes.contains(request.getMessageType())) {
-            throw new BadRequestException("Invalid messageType");
+        // No validation existed at all: empty/blank text messages were accepted and there was
+        // no length cap (a client bug or malicious request could store an arbitrarily large
+        // blob). messageType itself is already a strongly-typed enum (Message.MessageType), so
+        // Jackson rejects any value outside {TEXT, IMAGE, VIDEO, DOCUMENT, VOICE, REACTION}
+        // before this method is ever reached - no separate check needed for that part.
+        if (request.getMessageType() == null) {
+            throw new BadRequestException("messageType is required");
         }
-        if ("TEXT".equals(request.getMessageType())) {
+        if (request.getMessageType() == Message.MessageType.TEXT) {
             if (request.getMessageText() == null || request.getMessageText().trim().isEmpty()) {
                 throw new BadRequestException("Message text cannot be empty");
             }
