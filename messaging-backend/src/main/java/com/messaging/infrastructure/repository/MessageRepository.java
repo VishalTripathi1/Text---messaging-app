@@ -32,7 +32,7 @@ public interface MessageRepository extends JpaRepository<Message, Long> {
            ") ORDER BY m.createdAt DESC")
     Page<Message> searchMessages(@Param("userId") Long userId, @Param("query") String query, Pageable pageable);
 
-    @Query("SELECT m FROM Message m WHERE m.chat.id = :chatId AND m.sender.id != :userId AND m.isDeleted = false " +
+    @Query("SELECT m FROM Message m WHERE m.chat.id = :chatId AND m.sender.id <> :userId AND m.isDeleted = false " +
            "AND NOT EXISTS (SELECT r FROM ReadReceipt r WHERE r.message.id = m.id AND r.user.id = :userId)")
     List<Message> findUnreadMessagesInChat(@Param("chatId") Long chatId, @Param("userId") Long userId);
 
