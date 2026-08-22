@@ -44,10 +44,7 @@ public class UserServiceImpl implements UserService {
     @Override
     @Transactional(readOnly = true)
     public List<UserResponse> searchUsers(String query) {
-        return userRepository.findAll().stream()
-                .filter(u -> u.getUsername().toLowerCase().contains(query.toLowerCase()) || 
-                             u.getEmail().toLowerCase().contains(query.toLowerCase()) ||
-                             (u.getPhoneNumber() != null && u.getPhoneNumber().contains(query)))
+        return userRepository.searchByQuery(query).stream()
                 .map(this::mapToUserResponse)
                 .collect(Collectors.toList());
     }
@@ -63,24 +60,18 @@ public class UserServiceImpl implements UserService {
                 .filter(p -> p != null && !p.trim().isEmpty())
                 .map(p -> p.replaceAll("[^0-9]", ""))
                 .filter(p -> !p.isEmpty())
+                .distinct()
                 .collect(Collectors.toList());
 
         if (normalizedList.isEmpty()) {
             return List.of();
         }
 
-        return userRepository.findAll().stream()
+        // Real indexed lookup instead of loading every user row into memory to filter. Phone
+        // numbers are normalized to digits-only at registration (see AuthServiceImpl), so an
+        // exact match against the normalized input list is correct and fast.
+        return userRepository.findByPhoneNumberIn(normalizedList).stream()
                 .filter(u -> !u.getId().equals(currentUserId))
-                .filter(u -> {
-                    if (u.getPhoneNumber() == null) return false;
-                    String userPhoneDigits = u.getPhoneNumber().replaceAll("[^0-9]", "");
-                    if (userPhoneDigits.isEmpty()) return false;
-                    return normalizedList.stream().anyMatch(inputPhone -> 
-                        inputPhone.equals(userPhoneDigits) || 
-                        (inputPhone.length() >= 10 && userPhoneDigits.endsWith(inputPhone.substring(inputPhone.length() - 10))) ||
-                        (userPhoneDigits.length() >= 10 && inputPhone.endsWith(userPhoneDigits.substring(userPhoneDigits.length() - 10)))
-                    );
-                })
                 .map(this::mapToUserResponse)
                 .collect(Collectors.toList());
     }
@@ -122,10 +113,19 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
-    @Transactional(readOnly = true)
+    @Transactional
     public UserSettingsResponse getSettings(Long userId) {
+        // Settings were previously only ever created lazily inside updateSettings(). A brand
+        // new user who opens the Settings screen without having changed anything yet would hit
+        // this endpoint first and get a 404 before any settings row existed - crashing a screen
+        // that should just show sensible defaults. Creating (and immediately persisting) a
+        // default row here, the same way updateSettings() already does, fixes that.
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
         UserSettings settings = userSettingsRepository.findByUserId(userId)
-                .orElseThrow(() -> new ResourceNotFoundException("Settings not found for userId: " + userId));
+                .orElseGet(() -> userSettingsRepository.save(
+                        UserSettings.builder().user(user).build()
+                ));
         return mapToSettingsResponse(settings);
     }
 

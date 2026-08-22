@@ -38,6 +38,8 @@ public class MessageServiceImpl implements MessageService {
     private final AttachmentRepository attachmentRepository;
     private final MessageReactionRepository messageReactionRepository;
     private final GroupMemberRepository groupMemberRepository;
+    private final ChatUserPreferenceRepository chatUserPreferenceRepository;
+    private final UserSettingsRepository userSettingsRepository;
     private final PushNotificationService pushNotificationService;
 
     @Override
@@ -71,10 +73,28 @@ public class MessageServiceImpl implements MessageService {
     }
 
     @Override
-    @Transactional(readOnly = true)
+    @Transactional
     public List<ChatResponse> getUserChats(Long userId, int page, int size) {
+        // This was previously @Transactional(readOnly = true), but mapToChatResponse() below
+        // can call chatRepository.save(chat) to backfill a missing lastMessageId - a write
+        // inside a read-only transaction, which silently no-ops or throws depending on the JDBC
+        // driver. Since mapToChatResponse now also does the real work of resolving per-user
+        // pin/archive state, this method genuinely needs write access.
         Pageable pageable = PageRequest.of(page, size);
-        return chatRepository.findUserChats(userId, pageable)
+        return chatRepository.findUserChatsExcludingArchived(userId, pageable)
+                .getContent()
+                .stream()
+                .map(chat -> mapToChatResponse(chat, userId))
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<ChatResponse> getArchivedChats(Long userId, int page, int size) {
+        // Archiving a chat previously made it vanish permanently - there was no endpoint to list
+        // archived chats at all, so there was no way to ever find or unarchive one again.
+        Pageable pageable = PageRequest.of(page, size);
+        return chatRepository.findArchivedUserChats(userId, pageable)
                 .getContent()
                 .stream()
                 .map(chat -> mapToChatResponse(chat, userId))
@@ -86,6 +106,23 @@ public class MessageServiceImpl implements MessageService {
     public MessageResponse sendMessage(Long senderId, MessageRequest request) {
         User sender = userRepository.findById(senderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Sender not found"));
+
+        // No validation existed at all: empty/blank text messages were accepted, there was no
+        // length cap (a client bug or malicious request could store an arbitrarily large blob),
+        // and an invalid messageType would only fail later with an unhandled/opaque exception
+        // instead of a clear 400.
+        String allowedTypes = "TEXT,IMAGE,VIDEO,VOICE,DOCUMENT";
+        if (request.getMessageType() == null || !allowedTypes.contains(request.getMessageType())) {
+            throw new BadRequestException("Invalid messageType");
+        }
+        if ("TEXT".equals(request.getMessageType())) {
+            if (request.getMessageText() == null || request.getMessageText().trim().isEmpty()) {
+                throw new BadRequestException("Message text cannot be empty");
+            }
+        }
+        if (request.getMessageText() != null && request.getMessageText().length() > 5000) {
+            throw new BadRequestException("Message text cannot exceed 5000 characters");
+        }
 
         Chat chat = null;
         Group group = null;
@@ -144,21 +181,37 @@ public class MessageServiceImpl implements MessageService {
                     .status(DeliveryStatus.DeliveryStatusType.PENDING)
                     .build());
 
-            // Trigger push notification for private chat
-            pushNotificationService.sendPushNotification(
-                    recipient.getId(),
-                    getUserDisplayName(sender),
-                    savedMessage.getMessageText(),
-                    Map.of(
-                            "chatId", chat.getId().toString(),
-                            "type", "CHAT_MESSAGE"
-                    )
-            );
+            // Archived chats should be silenced, the same way muting works in every other chat
+            // app - previously a push fired unconditionally regardless of archive state.
+            boolean recipientArchivedThisChat = chatUserPreferenceRepository
+                    .findByChatIdAndUserId(chat.getId(), recipient.getId())
+                    .map(p -> Boolean.TRUE.equals(p.getIsArchived()))
+                    .orElse(false);
+            if (!recipientArchivedThisChat) {
+                pushNotificationService.sendPushNotification(
+                        recipient.getId(),
+                        getUserDisplayName(sender),
+                        savedMessage.getMessageText(),
+                        Map.of(
+                                "chatId", chat.getId().toString(),
+                                "type", "CHAT_MESSAGE"
+                        )
+                );
+            }
         } else if (group != null) {
-            // Trigger push notification for all other group members
+            // Delivery-status tracking for group messages previously didn't exist at all - only
+            // private-chat messages got a DeliveryStatus row, so mapToMessageResponse() had no
+            // way to compute anything but the hardcoded default "SENT" for every group message,
+            // and group ticks never progressed to DELIVERED/READ.
             List<GroupMember> members = groupMemberRepository.findByGroupId(group.getId());
             for (GroupMember member : members) {
                 if (!member.getUser().getId().equals(senderId)) {
+                    deliveryStatusRepository.save(DeliveryStatus.builder()
+                            .message(savedMessage)
+                            .recipient(member.getUser())
+                            .status(DeliveryStatus.DeliveryStatusType.PENDING)
+                            .build());
+
                     pushNotificationService.sendPushNotification(
                             member.getUser().getId(),
                             group.getGroupName() + " (" + getUserDisplayName(sender) + ")",
@@ -177,7 +230,15 @@ public class MessageServiceImpl implements MessageService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<MessageResponse> getChatMessages(Long chatId, int page, int size) {
+    public List<MessageResponse> getChatMessages(Long userId, Long chatId, int page, int size) {
+        // These endpoints previously took chatId/groupId straight from the URL with no check
+        // that the caller was actually a participant - any authenticated user could read any
+        // chat's or group's message history just by guessing/incrementing the ID. The
+        // isUserInChat/isUserInGroup queries already existed in MessageRepository but were
+        // never called from anywhere.
+        if (!messageRepository.isUserInChat(chatId, userId)) {
+            throw new BadRequestException("You are not a participant of this chat");
+        }
         Pageable pageable = PageRequest.of(page, size);
         return messageRepository.findChatMessages(chatId, pageable)
                 .getContent()
@@ -188,7 +249,10 @@ public class MessageServiceImpl implements MessageService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<MessageResponse> getGroupMessages(Long groupId, int page, int size) {
+    public List<MessageResponse> getGroupMessages(Long userId, Long groupId, int page, int size) {
+        if (!messageRepository.isUserInGroup(groupId, userId)) {
+            throw new BadRequestException("You are not a member of this group");
+        }
         Pageable pageable = PageRequest.of(page, size);
         return messageRepository.findGroupMessages(groupId, pageable)
                 .getContent()
@@ -250,12 +314,21 @@ public class MessageServiceImpl implements MessageService {
 
         int unreadCount = readReceiptRepository.countUnreadMessagesInChat(chat.getId(), currentUserId);
 
+        // Pin/archive state is per-user (see ChatUserPreference) - a chat pinned or archived by
+        // one participant must not affect what the other participant sees. Absence of a
+        // preference row (the common case) means "not pinned, not archived".
+        ChatUserPreference preference = chatUserPreferenceRepository
+                .findByChatIdAndUserId(chat.getId(), currentUserId)
+                .orElse(null);
+        boolean isPinned = preference != null && Boolean.TRUE.equals(preference.getIsPinned());
+        boolean isArchived = preference != null && Boolean.TRUE.equals(preference.getIsArchived());
+
         return ChatResponse.builder()
                 .id(chat.getId())
                 .otherUser(otherUserDto)
                 .lastMessage(lastMessageDto)
-                .isPinned(chat.getIsPinned())
-                .isArchived(chat.getIsArchived())
+                .isPinned(isPinned)
+                .isArchived(isArchived)
                 .unreadCount(unreadCount)
                 .build();
     }
@@ -291,12 +364,51 @@ public class MessageServiceImpl implements MessageService {
             Long recipientId = message.getChat().getUser1().getId().equals(message.getSender().getId()) ?
                     message.getChat().getUser2().getId() : message.getChat().getUser1().getId();
 
-            if (readReceiptRepository.findByMessageIdAndUserId(message.getId(), recipientId).isPresent()) {
+            // showReadReceipts existed as a setting but was never checked - the sender always
+            // saw a "read" tick regardless of whether the recipient had disabled read receipts
+            // for themselves. Internal unread-count tracking still relies on the ReadReceipt row
+            // existing (see countUnreadMessagesInChat) so we keep creating it either way -  only
+            // the status *reported back to the sender* is capped at DELIVERED when the reader
+            // opted out, which is the actual privacy behavior this setting is meant to provide.
+            boolean recipientShowsReadReceipts = userSettingsRepository.findByUserId(recipientId)
+                    .map(s -> !Boolean.FALSE.equals(s.getShowReadReceipts()))
+                    .orElse(true);
+
+            boolean hasRead = readReceiptRepository.findByMessageIdAndUserId(message.getId(), recipientId).isPresent();
+            if (hasRead && recipientShowsReadReceipts) {
                 statusStr = "READ";
             } else {
                 Optional<DeliveryStatus> ds = deliveryStatusRepository.findByMessageIdAndRecipientId(message.getId(), recipientId);
                 if (ds.isPresent() && ds.get().getStatus() == DeliveryStatus.DeliveryStatusType.DELIVERED) {
                     statusStr = "DELIVERED";
+                }
+            }
+        } else if (message.getGroup() != null) {
+            // Group messages previously always defaulted to "SENT" - mapToMessageResponse only
+            // ever computed a real status for private chats (message.getChat() != null). Now
+            // that sendMessage() also creates DeliveryStatus rows per group member, aggregate
+            // across every other member: READ only once everyone has read it, DELIVERED once
+            // everyone has received it, otherwise SENT. This mirrors how WhatsApp-style group
+            // ticks behave; a full per-member read breakdown is a separate, larger feature.
+            List<Long> otherMemberIds = groupMemberRepository.findByGroupId(message.getGroup().getId())
+                    .stream()
+                    .map(m -> m.getUser().getId())
+                    .filter(id -> !id.equals(message.getSender().getId()))
+                    .toList();
+
+            if (!otherMemberIds.isEmpty()) {
+                boolean allRead = otherMemberIds.stream().allMatch(id ->
+                        readReceiptRepository.findByMessageIdAndUserId(message.getId(), id).isPresent());
+                if (allRead) {
+                    statusStr = "READ";
+                } else {
+                    boolean allDelivered = otherMemberIds.stream().allMatch(id ->
+                            deliveryStatusRepository.findByMessageIdAndRecipientId(message.getId(), id)
+                                    .map(ds -> ds.getStatus() == DeliveryStatus.DeliveryStatusType.DELIVERED)
+                                    .orElse(false));
+                    if (allDelivered) {
+                        statusStr = "DELIVERED";
+                    }
                 }
             }
         }
@@ -363,12 +475,15 @@ public class MessageServiceImpl implements MessageService {
         }
         message.setIsDeleted(true);
         message.setMessageText("This message was deleted");
+        // The entity has a deletedAt column but nothing ever populated it - it silently stayed
+        // null forever regardless of when (or whether) a message was actually deleted.
+        message.setDeletedAt(java.time.LocalDateTime.now());
         return mapToMessageResponse(messageRepository.save(message));
     }
 
     @Override
     @Transactional
-    public void addOrUpdateReaction(Long userId, Long messageId, String reaction) {
+    public MessageResponse addOrUpdateReaction(Long userId, Long messageId, String reaction) {
         Message message = messageRepository.findById(messageId)
                 .orElseThrow(() -> new ResourceNotFoundException("Message not found"));
         User user = userRepository.getReferenceById(userId);
@@ -381,13 +496,17 @@ public class MessageServiceImpl implements MessageService {
         
         messageReaction.setReaction(reaction);
         messageReactionRepository.save(messageReaction);
+        return mapToMessageResponse(message);
     }
 
     @Override
     @Transactional
-    public void removeReaction(Long userId, Long messageId) {
+    public MessageResponse removeReaction(Long userId, Long messageId) {
+        Message message = messageRepository.findById(messageId)
+                .orElseThrow(() -> new ResourceNotFoundException("Message not found"));
         messageReactionRepository.findByMessageIdAndUserId(messageId, userId)
                 .ifPresent(messageReactionRepository::delete);
+        return mapToMessageResponse(message);
     }
 
     @Override
@@ -395,8 +514,11 @@ public class MessageServiceImpl implements MessageService {
     public ChatResponse togglePinChat(Long userId, Long chatId, boolean pinned) {
         Chat chat = chatRepository.findById(chatId)
                 .orElseThrow(() -> new ResourceNotFoundException("Chat not found"));
-        chat.setIsPinned(pinned);
-        return mapToChatResponse(chatRepository.save(chat), userId);
+        ChatUserPreference preference = chatUserPreferenceRepository.findByChatIdAndUserId(chatId, userId)
+                .orElseGet(() -> ChatUserPreference.builder().chat(chat).user(userRepository.getReferenceById(userId)).build());
+        preference.setIsPinned(pinned);
+        chatUserPreferenceRepository.save(preference);
+        return mapToChatResponse(chat, userId);
     }
 
     @Override
@@ -404,8 +526,11 @@ public class MessageServiceImpl implements MessageService {
     public ChatResponse toggleArchiveChat(Long userId, Long chatId, boolean archived) {
         Chat chat = chatRepository.findById(chatId)
                 .orElseThrow(() -> new ResourceNotFoundException("Chat not found"));
-        chat.setIsArchived(archived);
-        return mapToChatResponse(chatRepository.save(chat), userId);
+        ChatUserPreference preference = chatUserPreferenceRepository.findByChatIdAndUserId(chatId, userId)
+                .orElseGet(() -> ChatUserPreference.builder().chat(chat).user(userRepository.getReferenceById(userId)).build());
+        preference.setIsArchived(archived);
+        chatUserPreferenceRepository.save(preference);
+        return mapToChatResponse(chat, userId);
     }
 
     @Override

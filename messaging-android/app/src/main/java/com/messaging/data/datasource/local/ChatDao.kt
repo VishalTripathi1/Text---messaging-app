@@ -17,6 +17,9 @@ interface ChatDao {
     @Query("SELECT * FROM chats WHERE id = :chatId")
     fun getChatById(chatId: Long): ChatEntity?
 
+    @Query("SELECT * FROM chats WHERE id = :chatId")
+    fun getChatByIdFlow(chatId: Long): Flow<ChatEntity?>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun insertChats(chats: List<ChatEntity>)
 
@@ -49,7 +52,13 @@ interface ChatDao {
 
     @Query("DELETE FROM chats")
     fun deleteAllChats()
-    
 
-   
+    /**
+     * Updates the cached online/offline status for whichever chat row has this user as the
+     * other participant. The backend already broadcasts USER_STATUS over the WebSocket on every
+     * connect/disconnect, but nothing on the client ever handled that message type - so status
+     * only ever changed after a manual sync/refresh, not in real time.
+     */
+    @Query("UPDATE chats SET otherStatus = :status WHERE otherUserId = :userId")
+    fun updateOtherUserStatus(userId: Long, status: String)
 }

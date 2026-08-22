@@ -82,7 +82,12 @@ public class AuthServiceImpl implements AuthService {
                         )
                 )
                 .phoneNumber(
-                        request.getPhoneNumber()
+                        // Normalized to digits-only so contact-sync lookups (which match on
+                        // normalized digits) can use a real indexed SQL query instead of
+                        // pulling every user into memory to compare formatted phone numbers.
+                        request.getPhoneNumber() != null
+                                ? request.getPhoneNumber().replaceAll("[^0-9]", "")
+                                : null
                 )
                 .isActive(true)
                 .build();

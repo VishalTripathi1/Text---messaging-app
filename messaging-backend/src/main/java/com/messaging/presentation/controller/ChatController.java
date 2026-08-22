@@ -7,6 +7,7 @@ import com.messaging.domain.dto.response.ChatResponse;
 import com.messaging.domain.dto.response.MessageResponse;
 import com.messaging.domain.entity.Chat;
 import com.messaging.infrastructure.repository.ChatRepository;
+import com.messaging.infrastructure.repository.GroupMemberRepository;
 import com.messaging.infrastructure.security.CustomUserPrincipal;
 import com.messaging.presentation.websocket.ChatWebSocketHandler;
 import com.messaging.presentation.websocket.WebSocketMessage;
@@ -29,6 +30,7 @@ public class ChatController {
 
     private final MessageService messageService;
     private final ChatRepository chatRepository;
+    private final GroupMemberRepository groupMemberRepository;
     private final ObjectMapper objectMapper;
 
     @PostMapping
@@ -50,6 +52,16 @@ public class ChatController {
         return ResponseEntity.ok(chats);
     }
 
+    @GetMapping("/archived")
+    public ResponseEntity<List<ChatResponse>> getArchivedChats(
+            @AuthenticationPrincipal CustomUserPrincipal principal,
+            @RequestParam(value = "page", defaultValue = "0") int page,
+            @RequestParam(value = "size", defaultValue = "20") int size
+    ) {
+        List<ChatResponse> chats = messageService.getArchivedChats(principal.getId(), page, size);
+        return ResponseEntity.ok(chats);
+    }
+
     @PostMapping("/message")
     public ResponseEntity<MessageResponse> sendMessage(
             @AuthenticationPrincipal CustomUserPrincipal principal,
@@ -61,21 +73,23 @@ public class ChatController {
 
     @GetMapping("/{chatId}/messages")
     public ResponseEntity<List<MessageResponse>> getChatMessages(
+            @AuthenticationPrincipal CustomUserPrincipal principal,
             @PathVariable("chatId") Long chatId,
             @RequestParam(value = "page", defaultValue = "0") int page,
             @RequestParam(value = "size", defaultValue = "20") int size
     ) {
-        List<MessageResponse> messages = messageService.getChatMessages(chatId, page, size);
+        List<MessageResponse> messages = messageService.getChatMessages(principal.getId(), chatId, page, size);
         return ResponseEntity.ok(messages);
     }
 
     @GetMapping("/group/{groupId}/messages")
     public ResponseEntity<List<MessageResponse>> getGroupMessages(
+            @AuthenticationPrincipal CustomUserPrincipal principal,
             @PathVariable("groupId") Long groupId,
             @RequestParam(value = "page", defaultValue = "0") int page,
             @RequestParam(value = "size", defaultValue = "20") int size
     ) {
-        List<MessageResponse> messages = messageService.getGroupMessages(groupId, page, size);
+        List<MessageResponse> messages = messageService.getGroupMessages(principal.getId(), groupId, page, size);
         return ResponseEntity.ok(messages);
     }
 
@@ -130,26 +144,36 @@ public class ChatController {
 
     private void notifyMessageUpdate(Long senderId, MessageResponse response) {
         try {
-            Long recipientId = null;
-            if (response.getChatId() != null) {
-                Chat chat = chatRepository.findById(response.getChatId()).orElse(null);
-                if (chat != null) {
-                    recipientId = chat.getUser1().getId().equals(senderId) ? chat.getUser2().getId() : chat.getUser1().getId();
-                }
-            }
-
             WebSocketMessage outbound = WebSocketMessage.builder()
                     .type("CHAT_MESSAGE")
                     .senderId(senderId)
-                    .recipientId(recipientId)
                     .chatId(response.getChatId())
                     .groupId(response.getGroupId())
                     .payload(response)
                     .build();
 
             String json = objectMapper.writeValueAsString(outbound);
-            if (recipientId != null) {
-                ChatWebSocketHandler.sendToUserStatic(recipientId, json);
+
+            if (response.getChatId() != null) {
+                Chat chat = chatRepository.findById(response.getChatId()).orElse(null);
+                if (chat != null) {
+                    Long recipientId = chat.getUser1().getId().equals(senderId)
+                            ? chat.getUser2().getId() : chat.getUser1().getId();
+                    ChatWebSocketHandler.sendToUserStatic(recipientId, json);
+                }
+            } else if (response.getGroupId() != null) {
+                // Previously this branch didn't exist at all - edits, deletes, and reactions on
+                // group messages were silently never broadcast to other group members in real
+                // time (they'd only see the change after their next full sync).
+                List<Long> memberIds = groupMemberRepository.findByGroupId(response.getGroupId())
+                        .stream()
+                        .map(m -> m.getUser().getId())
+                        .toList();
+                for (Long memberId : memberIds) {
+                    if (!memberId.equals(senderId)) {
+                        ChatWebSocketHandler.sendToUserStatic(memberId, json);
+                    }
+                }
             }
         } catch (Exception e) {
             log.error("Failed to broadcast message update for messageId {}: {}", response.getId(), e.getMessage());
@@ -162,7 +186,8 @@ public class ChatController {
             @PathVariable("messageId") Long messageId,
             @RequestParam("reaction") String reaction
     ) {
-        messageService.addOrUpdateReaction(principal.getId(), messageId, reaction);
+        MessageResponse message = messageService.addOrUpdateReaction(principal.getId(), messageId, reaction);
+        notifyMessageUpdate(principal.getId(), message);
         return ResponseEntity.ok().build();
     }
 
@@ -171,7 +196,8 @@ public class ChatController {
             @AuthenticationPrincipal CustomUserPrincipal principal,
             @PathVariable("messageId") Long messageId
     ) {
-        messageService.removeReaction(principal.getId(), messageId);
+        MessageResponse message = messageService.removeReaction(principal.getId(), messageId);
+        notifyMessageUpdate(principal.getId(), message);
         return ResponseEntity.ok().build();
     }
 

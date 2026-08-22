@@ -16,11 +16,11 @@ import java.util.List;
 @Repository
 public interface MessageRepository extends JpaRepository<Message, Long> {
 
-    @Query("SELECT m FROM Message m WHERE m.chat.id = :chatId AND m.isDeleted = false " +
+    @Query("SELECT m FROM Message m WHERE m.chat.id = :chatId " +
            "ORDER BY m.createdAt DESC")
     Page<Message> findChatMessages(@Param("chatId") Long chatId, Pageable pageable);
 
-    @Query("SELECT m FROM Message m WHERE m.group.id = :groupId AND m.isDeleted = false " +
+    @Query("SELECT m FROM Message m WHERE m.group.id = :groupId " +
            "ORDER BY m.createdAt DESC")
     Page<Message> findGroupMessages(@Param("groupId") Long groupId, Pageable pageable);
 
@@ -37,4 +37,19 @@ public interface MessageRepository extends JpaRepository<Message, Long> {
     List<Message> findUnreadMessagesInChat(@Param("chatId") Long chatId, @Param("userId") Long userId);
 
     long countBySenderId(Long userId);
+
+    /**
+     * Authorization check: returns true if the user is a participant of the given chat.
+     */
+    @Query("SELECT CASE WHEN COUNT(c) > 0 THEN true ELSE false END FROM Chat c " +
+           "WHERE c.id = :chatId AND (c.user1.id = :userId OR c.user2.id = :userId)")
+    boolean isUserInChat(@Param("chatId") Long chatId, @Param("userId") Long userId);
+
+    /**
+     * Authorization check: returns true if the user is a member of the given group.
+     */
+    @Query("SELECT CASE WHEN COUNT(gm) > 0 THEN true ELSE false END FROM GroupMember gm " +
+           "WHERE gm.group.id = :groupId AND gm.user.id = :userId")
+    boolean isUserInGroup(@Param("groupId") Long groupId, @Param("userId") Long userId);
 }
+

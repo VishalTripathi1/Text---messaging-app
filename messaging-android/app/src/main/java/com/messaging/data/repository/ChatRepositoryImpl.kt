@@ -226,6 +226,7 @@ class ChatRepositoryImpl @Inject constructor(
                     chatDao.insertChat(chat.copy(
                         lastMessageText = text,
                         lastMessageSenderId = currentUserId,
+                        lastMessageStatus = "PENDING",
                         lastMessageAt = System.currentTimeMillis()
                     ))
                 }
@@ -399,6 +400,16 @@ class ChatRepositoryImpl @Inject constructor(
                         }
                     }
 
+                    // Edits, deletes, and reactions are broadcast over the same "CHAT_MESSAGE"
+                    // type as brand-new messages (see notifyMessageUpdate on the backend) so
+                    // that this REPLACE-on-insert naturally picks up the updated text/reactions
+                    // for a message that already exists locally. But that means this handler
+                    // fires for updates to messages that aren't the newest one in the chat too -
+                    // without this check, reacting to (or editing) a 3-day-old message would
+                    // wrongly bump it to the top of the chat list preview and increment the
+                    // unread badge, exactly as if a new message had just arrived.
+                    val isGenuinelyNewMessage = messageDao.getMessageById(response.id) == null
+
                     val entity = response.toEntity(deliveryStatus)
                     messageDao.insertMessage(entity)
 
@@ -439,7 +450,7 @@ class ChatRepositoryImpl @Inject constructor(
                             }
                         }
                         
-                        if (chat != null) {
+                        if (chat != null && isGenuinelyNewMessage) {
                             if (isOutgoing) {
                                 chatDao.updateLastMessageOnly(
                                     chatId = resolvedChatId,
@@ -458,6 +469,15 @@ class ChatRepositoryImpl @Inject constructor(
                                 )
                             }
                         }
+                    }
+                }
+                "USER_STATUS" -> {
+                    val jsonStr = gson.toJson(wsMessage.payload)
+                    val payloadMap = gson.fromJson(jsonStr, Map::class.java)
+                    val userId = (payloadMap["userId"] as? Number)?.toLong()
+                    val status = payloadMap["status"] as? String
+                    if (userId != null && status != null) {
+                        chatDao.updateOtherUserStatus(userId, status)
                     }
                 }
                 "DELIVERY_STATUS" -> {

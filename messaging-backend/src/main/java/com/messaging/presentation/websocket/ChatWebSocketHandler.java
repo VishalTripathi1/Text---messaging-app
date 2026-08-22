@@ -38,6 +38,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     private final UserProfileRepository userProfileRepository;
     private final GroupRepository groupRepository;
     private final DeliveryStatusRepository deliveryStatusRepository;
+    private final com.messaging.infrastructure.repository.UserSettingsRepository userSettingsRepository;
     private final ChatRepository chatRepository;
 
     // Thread-safe map of active WebSocket connections
@@ -113,7 +114,13 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             List<Long> memberIds = groupRepository.findMemberUserIds(response.getGroupId());
             for (Long memberId : memberIds) {
                 if (!memberId.equals(wsMessage.getSenderId())) {
-                    sendToUser(memberId, json);
+                    boolean delivered = sendToUser(memberId, json);
+                    // Mirrors the private-chat branch below: mark delivered immediately for
+                    // members who are online right now, instead of only ever catching up via
+                    // processPendingDeliveries() the next time they reconnect.
+                    if (delivered) {
+                        messageService.markMessageAsDelivered(memberId, response.getId());
+                    }
                 }
             }
             sendToUser(wsMessage.getSenderId(), json);
@@ -151,6 +158,16 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void handleTyping(WebSocketMessage wsMessage) throws IOException {
+        // showTypingIndicator existed as a stored setting but was never actually checked - the
+        // server broadcast typing events unconditionally regardless of whether the sender had
+        // opted out.
+        boolean typingEnabled = userSettingsRepository.findByUserId(wsMessage.getSenderId())
+                .map(s -> !Boolean.FALSE.equals(s.getShowTypingIndicator()))
+                .orElse(true);
+        if (!typingEnabled) {
+            return;
+        }
+
         String json = objectMapper.writeValueAsString(wsMessage);
         if (wsMessage.getGroupId() != null) {
             List<Long> memberIds = groupRepository.findMemberUserIds(wsMessage.getGroupId());
@@ -211,11 +228,19 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     public static boolean sendToUserStatic(Long userId, String json) {
         WebSocketSession session = userSessions.get(userId);
         if (session != null && session.isOpen()) {
-            try {
-                session.sendMessage(new TextMessage(json));
-                return true;
-            } catch (IOException e) {
-                log.error("Failed to send WebSocket message to user {}: {}", userId, e.getMessage());
+            // Spring's WebSocketSession.sendMessage() is not thread-safe: if two threads write
+            // to the same session concurrently (e.g. two different senders messaging this user
+            // at nearly the same instant), the underlying frame writer can throw
+            // "IllegalStateException: TEXT_PARTIAL_WRITING" and drop the message. Synchronizing
+            // per-session (not globally) serializes writes to a given user's socket without
+            // blocking unrelated sessions.
+            synchronized (session) {
+                try {
+                    session.sendMessage(new TextMessage(json));
+                    return true;
+                } catch (IOException e) {
+                    log.error("Failed to send WebSocket message to user {}: {}", userId, e.getMessage());
+                }
             }
         }
         return false;
@@ -236,7 +261,9 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             for (WebSocketSession session : userSessions.values()) {
                 Long sessionUserId = (Long) session.getAttributes().get("userId");
                 if (sessionUserId != null && !sessionUserId.equals(userId)) {
-                    session.sendMessage(new TextMessage(json));
+                    synchronized (session) {
+                        session.sendMessage(new TextMessage(json));
+                    }
                 }
             }
         } catch (IOException e) {
@@ -255,14 +282,17 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void processPendingDeliveries(Long recipientId) {
-        List<DeliveryStatus> pendingList = deliveryStatusRepository.findByRecipientIdAndStatus(
+        List<DeliveryStatus> pendingList = deliveryStatusRepository.findByRecipientIdAndStatusWithMessageAndSender(
                 recipientId, DeliveryStatus.DeliveryStatusType.PENDING);
 
         for (DeliveryStatus status : pendingList) {
             status.setStatus(DeliveryStatus.DeliveryStatusType.DELIVERED);
             status.setDeliveredAt(LocalDateTime.now());
-            deliveryStatusRepository.save(status);
+        }
+        // One batch write instead of N individual save() calls.
+        deliveryStatusRepository.saveAll(pendingList);
 
+        for (DeliveryStatus status : pendingList) {
             Long senderId = status.getMessage().getSender().getId();
             Long chatId = status.getMessage().getChat() != null ? status.getMessage().getChat().getId() : null;
 

@@ -110,6 +110,22 @@ class ChatViewModel @Inject constructor(
         }
         syncMessages()
         markAsRead()
+
+        // Keep the header's online/offline status live. Previously _otherUserStatus was only
+        // ever set once (the snapshot read above), so a USER_STATUS update arriving over the
+        // WebSocket while this chat screen was already open wouldn't be reflected until the
+        // user backed out and reopened the chat.
+        if (chatId > 0) {
+            viewModelScope.launch {
+                chatDao.getChatByIdFlow(chatId)
+                    .flowOn(Dispatchers.IO)
+                    .collect { chat ->
+                        if (chat != null && !chat.isGroup) {
+                            _otherUserStatus.value = chat.otherStatus ?: "OFFLINE"
+                        }
+                    }
+            }
+        }
     }
 
     fun syncMessages() {

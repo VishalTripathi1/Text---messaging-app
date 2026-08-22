@@ -16,12 +16,14 @@ public interface MessageService {
     ChatResponse getOrCreateChat(Long userId, Long otherUserId);
     
     List<ChatResponse> getUserChats(Long userId, int page, int size);
+
+    List<ChatResponse> getArchivedChats(Long userId, int page, int size);
     
     MessageResponse sendMessage(Long senderId, MessageRequest request);
     
-    List<MessageResponse> getChatMessages(Long chatId, int page, int size);
+    List<MessageResponse> getChatMessages(Long userId, Long chatId, int page, int size);
     
-    List<MessageResponse> getGroupMessages(Long groupId, int page, int size);
+    List<MessageResponse> getGroupMessages(Long userId, Long groupId, int page, int size);
     
     void markChatAsRead(Long userId, Long chatId);
     
@@ -31,9 +33,9 @@ public interface MessageService {
 
     MessageResponse deleteMessage(Long userId, Long messageId);
 
-    void addOrUpdateReaction(Long userId, Long messageId, String reaction);
+    MessageResponse addOrUpdateReaction(Long userId, Long messageId, String reaction);
 
-    void removeReaction(Long userId, Long messageId);
+    MessageResponse removeReaction(Long userId, Long messageId);
 
     ChatResponse togglePinChat(Long userId, Long chatId, boolean pinned);
 
