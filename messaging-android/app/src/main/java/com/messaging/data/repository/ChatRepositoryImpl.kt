@@ -176,7 +176,14 @@ class ChatRepositoryImpl @Inject constructor(
                 Result.failure(Exception(parseErrorMessage(response, "Failed to get or create chat")))
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            // Anything thrown before the isSuccessful check above (a network timeout, a DNS
+            // failure, a malformed JSON body that fails to deserialize, etc.) was previously
+            // returned as-is via Result.failure(e) with no logging at all - if the exception's
+            // own message happened to be uninformative (or come from a library with a generic
+            // default message), there was no way to tell what actually went wrong afterward.
+            // Logging it here means the next time this happens, logcat will show the real cause.
+            Log.e("ChatRepositoryImpl", "getOrCreateChat failed for recipientId=$recipientId", e)
+            Result.failure(Exception("Failed to start chat: ${e.message ?: e.javaClass.simpleName}", e))
         }
     }
 
@@ -223,8 +230,16 @@ class ChatRepositoryImpl @Inject constructor(
             if (resolvedChatId != null) {
                 val chat = chatDao.getChatById(resolvedChatId)
                 if (chat != null) {
+                    val previewText = if (text.isBlank() && attachmentPath != null) {
+                        when (type) {
+                            "IMAGE" -> "📷 Photo"
+                            "VIDEO" -> "🎥 Video"
+                            "VOICE" -> "🎤 Voice message"
+                            else -> "📎 Document"
+                        }
+                    } else text
                     chatDao.insertChat(chat.copy(
-                        lastMessageText = text,
+                        lastMessageText = previewText,
                         lastMessageSenderId = currentUserId,
                         lastMessageStatus = "PENDING",
                         lastMessageAt = System.currentTimeMillis()
@@ -384,7 +399,7 @@ class ChatRepositoryImpl @Inject constructor(
         
         try {
             when (wsMessage.type) {
-                "CHAT_MESSAGE" -> {
+                "CHAT_MESSAGE", "MESSAGE_UPDATE", "REACTION_UPDATE" -> {
                     val jsonStr = gson.toJson(wsMessage.payload)
                     val response = gson.fromJson(jsonStr, MessageResponse::class.java)
                     
@@ -392,7 +407,7 @@ class ChatRepositoryImpl @Inject constructor(
                     val deliveryStatus = if (isOutgoing) "SENT" else "READ"
                     
                     val groupId = response.groupId
-                    if (isOutgoing) {
+                    if (isOutgoing && wsMessage.type == "CHAT_MESSAGE") {
                         if (groupId != null) {
                             messageDao.deletePendingMessagesForGroup(groupId)
                         } else if (response.chatId != null) {
@@ -400,14 +415,9 @@ class ChatRepositoryImpl @Inject constructor(
                         }
                     }
 
-                    // Edits, deletes, and reactions are broadcast over the same "CHAT_MESSAGE"
-                    // type as brand-new messages (see notifyMessageUpdate on the backend) so
-                    // that this REPLACE-on-insert naturally picks up the updated text/reactions
-                    // for a message that already exists locally. But that means this handler
-                    // fires for updates to messages that aren't the newest one in the chat too -
-                    // without this check, reacting to (or editing) a 3-day-old message would
-                    // wrongly bump it to the top of the chat list preview and increment the
-                    // unread badge, exactly as if a new message had just arrived.
+                    // Message and reaction updates use dedicated event types. REPLACE-on-insert
+                    // applies them locally without turning an edit of an old message into a new
+                    // chat-list preview or unread notification.
                     val isGenuinelyNewMessage = messageDao.getMessageById(response.id) == null
 
                     val entity = response.toEntity(deliveryStatus)
@@ -492,6 +502,15 @@ class ChatRepositoryImpl @Inject constructor(
                             // already echoed back via CHAT_MESSAGE) - just advance its
                             // status: PENDING -> SENT -> DELIVERED -> READ.
                             messageDao.updateDeliveryStatus(messageId, status)
+                            val conversationId = existingMessage.groupId?.let { -it } ?: existingMessage.chatId
+                            if (conversationId != null) {
+                                chatDao.updateLastMessageStatus(
+                                    conversationId,
+                                    existingMessage.senderId,
+                                    existingMessage.messageText,
+                                    status
+                                )
+                            }
                         } else {
                             // This is the first confirmation for a message we just sent.
                             // Locally it is still stored under its temporary negative id
@@ -517,6 +536,10 @@ class ChatRepositoryImpl @Inject constructor(
                     val chatId = wsMessage.chatId
                     if (chatId != null) {
                         messageDao.markChatMessagesAsRead(chatId)
+                        val latest = messageDao.getLatestMessageForChat(chatId)
+                        if (latest != null && latest.senderId == currentUserId) {
+                            chatDao.updateLastMessageStatus(chatId, latest.senderId, latest.messageText, "READ")
+                        }
                     }
                 }
             }

@@ -21,15 +21,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.navigation.NavController
 import com.messaging.domain.entity.Message
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.debounce
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -58,7 +62,7 @@ fun formatFileSize(bytes: Long): String {
  * A file the user has picked but not yet sent - lets them review/remove it before it goes out.
  */
 data class PendingAttachment(
-    val fileBytes: ByteArray,
+    val uri: android.net.Uri,
     val fileName: String,
     val mimeType: String,
     val messageType: String
@@ -84,6 +88,23 @@ fun ChatScreen(
 
     var isSearchActive by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
+
+    // See the identical fix + rationale in ChatListScreen.kt - without this, reopening an
+    // already-composed chat screen (app backgrounded/resumed, or screen unlocked) never
+    // refetched missed messages or re-verified the WebSocket connection.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.syncMessages()
+                viewModel.markAsRead()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     val filteredMessages = remember(messages, searchQuery) {
         if (searchQuery.isBlank()) {
@@ -111,17 +132,15 @@ fun ChatScreen(
                     }
                 }
                 val mimeType = contentResolver.getType(uri) ?: "application/octet-stream"
-                val fileBytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
-
-                if (fileBytes != null) {
-                    val msgType = when {
-                        mimeType.startsWith("image/") -> "IMAGE"
-                        mimeType.startsWith("video/") -> "VIDEO"
-                        mimeType.startsWith("audio/") -> "VOICE"
-                        else -> "DOCUMENT"
-                    }
-                    pendingAttachment = PendingAttachment(fileBytes, fileName, mimeType, msgType)
+                val msgType = when {
+                    mimeType.startsWith("image/") -> "IMAGE"
+                    mimeType.startsWith("video/") -> "VIDEO"
+                    mimeType.startsWith("audio/") -> "VOICE"
+                    else -> "DOCUMENT"
                 }
+                // Keep only a content URI in Compose state. Reading a 100 MB video into a
+                // ByteArray here held it for the entire time the attachment preview was open.
+                pendingAttachment = PendingAttachment(uri, fileName, mimeType, msgType)
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -149,15 +168,15 @@ fun ChatScreen(
         }
     }
 
-    // Monitor typing state
-    LaunchedEffect(textState) {
-        if (textState.isNotEmpty()) {
-            viewModel.sendTypingState(true)
-            delay(2000)
-            viewModel.sendTypingState(false)
-        } else {
-            viewModel.sendTypingState(false)
-        }
+    // Send a single start event when typing begins, then a single stop event only after two
+    // seconds of inactivity. This avoids every keystroke racing a delayed stop event.
+    LaunchedEffect(textState.isNotBlank()) {
+        viewModel.sendTypingState(textState.isNotBlank())
+    }
+    LaunchedEffect(Unit) {
+        snapshotFlow { textState }
+            .debounce(2_000)
+            .collect { if (it.isNotBlank()) viewModel.sendTypingState(false) }
     }
 
     Scaffold(
@@ -286,7 +305,7 @@ fun ChatScreen(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "${attachment.messageType} • ${formatFileSize(attachment.fileBytes.size.toLong())}",
+                            text = attachment.messageType,
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -336,10 +355,12 @@ fun ChatScreen(
                         val attachment = pendingAttachment
                         if (attachment != null) {
                             viewModel.sendMediaMessage(
-                                attachment.fileBytes,
+                                context,
+                                attachment.uri,
                                 attachment.fileName,
                                 attachment.mimeType,
-                                attachment.messageType
+                                attachment.messageType,
+                                textState
                             )
                             pendingAttachment = null
                             textState = ""
@@ -381,7 +402,7 @@ fun MessageBubble(
 
     var showOptions by remember { mutableStateOf(false) }
     var showEditDialog by remember { mutableStateOf(false) }
-    var editVal by remember { mutableStateOf(message.messageText ?: "") }
+    var editVal by remember(message.id, message.messageText) { mutableStateOf(message.messageText ?: "") }
 
     Column(
         modifier = Modifier.fillMaxWidth(),

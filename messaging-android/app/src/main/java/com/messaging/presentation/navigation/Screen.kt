@@ -16,11 +16,11 @@ sealed class Screen(val route: String) {
     object CreateGroup : Screen("create_group")
 
     fun withArgs(vararg args: String): String {
-        return buildString {
-            append(route)
-            args.forEach { arg ->
-                append("/$arg")
-            }
+        var resolvedRoute = route
+        args.forEach { arg ->
+            val placeholder = Regex("\\{[^}]+}").find(resolvedRoute) ?: return@forEach
+            resolvedRoute = resolvedRoute.replaceRange(placeholder.range, arg)
         }
+        return resolvedRoute
     }
 }

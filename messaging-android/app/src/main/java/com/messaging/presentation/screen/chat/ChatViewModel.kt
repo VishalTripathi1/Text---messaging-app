@@ -1,6 +1,8 @@
 package com.messaging.presentation.screen.chat
 
 import android.util.Log
+import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -20,6 +22,7 @@ import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.Job
 
 /**
  * ChatViewModel - Controls conversation events, message logs, and typing notifications
@@ -53,6 +56,7 @@ class ChatViewModel @Inject constructor(
 
     private var otherUserId: Long? = null
     var currentUserId: Long = 0
+    private var peerTypingTimeout: Job? = null
 
     // Becomes true once chat metadata (in particular otherUserId, needed to route messages to
     // the recipient in real time over WebSocket) has finished loading. sendMessage() suspends
@@ -98,7 +102,15 @@ class ChatViewModel @Inject constructor(
                                 try {
                                     val jsonStr = gson.toJson(wsMessage.payload)
                                     val payloadMap = gson.fromJson(jsonStr, Map::class.java)
-                                    _isPeerTyping.value = payloadMap["isTyping"] as? Boolean ?: false
+                                    val isTyping = payloadMap["isTyping"] as? Boolean ?: false
+                                    _isPeerTyping.value = isTyping
+                                    peerTypingTimeout?.cancel()
+                                    if (isTyping) {
+                                        peerTypingTimeout = launch {
+                                            kotlinx.coroutines.delay(5_000)
+                                            _isPeerTyping.value = false
+                                        }
+                                    }
                                 } catch (e: Exception) {
                                     e.printStackTrace()
                                 }
@@ -129,6 +141,11 @@ class ChatViewModel @Inject constructor(
     }
 
     fun syncMessages() {
+        // Also re-verifies the WebSocket connection - the OS can silently drop it while the app
+        // is backgrounded/the screen is locked, and reconnecting is idempotent (see
+        // WebSocketClient's isConnecting/connectionStatus guard) so it's safe to call on every
+        // resume regardless of current state.
+        chatRepository.connectWebSocket()
         viewModelScope.launch {
             chatRepository.syncMessages(chatId)
         }
@@ -156,9 +173,24 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    fun sendMediaMessage(fileBytes: ByteArray, fileName: String, mimeType: String, type: String) {
+    fun sendMediaMessage(
+        context: Context,
+        uri: Uri,
+        fileName: String,
+        mimeType: String,
+        type: String,
+        caption: String
+    ) {
         viewModelScope.launch {
             withTimeoutOrNull(3000) { chatReady.await() }
+            // Bytes only exist during upload; the UI keeps a URI while the attachment is staged.
+            val fileBytes = try {
+                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: throw IllegalStateException("Unable to read selected attachment")
+            } catch (t: Throwable) {
+                Log.e("ChatViewModel", "Failed to read attachment", t)
+                return@launch
+            }
             chatRepository.uploadAttachment(fileBytes, fileName, mimeType)
                 .onSuccess { responseMap ->
                     val filePath = responseMap["filePath"] as? String ?: ""
@@ -167,7 +199,7 @@ class ChatViewModel @Inject constructor(
                     chatRepository.sendMessage(
                         recipientId = otherUserId,
                         chatId = chatId,
-                        text = "[Attachment: $fileName]",
+                        text = caption.trim(),
                         type = type,
                         attachmentPath = filePath,
                         attachmentFileName = fileName,

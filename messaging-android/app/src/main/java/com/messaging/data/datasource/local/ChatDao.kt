@@ -50,6 +50,9 @@ interface ChatDao {
     )
     fun updateLastMessageOnly(chatId: Long, text: String?, senderId: Long?, at: Long)
 
+    @Query("UPDATE chats SET lastMessageStatus = :status WHERE id = :chatId AND lastMessageSenderId = :senderId AND lastMessageText = :text")
+    fun updateLastMessageStatus(chatId: Long, senderId: Long, text: String?, status: String)
+
     @Query("DELETE FROM chats")
     fun deleteAllChats()
 

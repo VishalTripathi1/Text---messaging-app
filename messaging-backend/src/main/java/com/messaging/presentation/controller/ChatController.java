@@ -8,6 +8,7 @@ import com.messaging.domain.dto.response.MessageResponse;
 import com.messaging.domain.entity.Chat;
 import com.messaging.infrastructure.repository.ChatRepository;
 import com.messaging.infrastructure.repository.GroupMemberRepository;
+import com.messaging.infrastructure.repository.UserSettingsRepository;
 import com.messaging.infrastructure.security.CustomUserPrincipal;
 import com.messaging.presentation.websocket.ChatWebSocketHandler;
 import com.messaging.presentation.websocket.WebSocketMessage;
@@ -31,6 +32,7 @@ public class ChatController {
     private final MessageService messageService;
     private final ChatRepository chatRepository;
     private final GroupMemberRepository groupMemberRepository;
+    private final UserSettingsRepository userSettingsRepository;
     private final ObjectMapper objectMapper;
 
     @PostMapping
@@ -102,6 +104,17 @@ public class ChatController {
         messageService.markChatAsRead(userId, chatId);
 
         chatRepository.findById(chatId).ifPresent(chat -> {
+            if (!chat.getUser1().getId().equals(userId) && !chat.getUser2().getId().equals(userId)) {
+                return;
+            }
+            // A receipt is still stored for unread-count purposes, but the reader can choose
+            // not to disclose it to the sender.
+            boolean sharesReadReceipts = userSettingsRepository.findByUserId(userId)
+                    .map(settings -> !Boolean.FALSE.equals(settings.getShowReadReceipts()))
+                    .orElse(true);
+            if (!sharesReadReceipts) {
+                return;
+            }
             Long recipientId = chat.getUser1().getId().equals(userId) ? chat.getUser2().getId() : chat.getUser1().getId();
             try {
                 WebSocketMessage wsMsg = WebSocketMessage.builder()
@@ -127,7 +140,7 @@ public class ChatController {
     ) {
         Long userId = principal.getId();
         MessageResponse message = messageService.editMessage(userId, messageId, text);
-        notifyMessageUpdate(userId, message);
+        notifyMessageUpdate(userId, message, "MESSAGE_UPDATE");
         return ResponseEntity.ok(message);
     }
 
@@ -138,14 +151,14 @@ public class ChatController {
     ) {
         Long userId = principal.getId();
         MessageResponse message = messageService.deleteMessage(userId, messageId);
-        notifyMessageUpdate(userId, message);
+        notifyMessageUpdate(userId, message, "MESSAGE_UPDATE");
         return ResponseEntity.ok(message);
     }
 
-    private void notifyMessageUpdate(Long senderId, MessageResponse response) {
+    private void notifyMessageUpdate(Long senderId, MessageResponse response, String updateType) {
         try {
             WebSocketMessage outbound = WebSocketMessage.builder()
-                    .type("CHAT_MESSAGE")
+                    .type(updateType)
                     .senderId(senderId)
                     .chatId(response.getChatId())
                     .groupId(response.getGroupId())
@@ -187,7 +200,7 @@ public class ChatController {
             @RequestParam("reaction") String reaction
     ) {
         MessageResponse message = messageService.addOrUpdateReaction(principal.getId(), messageId, reaction);
-        notifyMessageUpdate(principal.getId(), message);
+        notifyMessageUpdate(principal.getId(), message, "REACTION_UPDATE");
         return ResponseEntity.ok().build();
     }
 
@@ -197,7 +210,7 @@ public class ChatController {
             @PathVariable("messageId") Long messageId
     ) {
         MessageResponse message = messageService.removeReaction(principal.getId(), messageId);
-        notifyMessageUpdate(principal.getId(), message);
+        notifyMessageUpdate(principal.getId(), message, "REACTION_UPDATE");
         return ResponseEntity.ok().build();
     }
 

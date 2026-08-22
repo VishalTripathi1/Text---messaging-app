@@ -116,6 +116,18 @@ fun MessageEntity.toDomain(): Message {
 }
 
 fun ChatResponse.toEntity(): ChatEntity {
+    val previewText = lastMessage?.let { message ->
+        if (message.messageText.isNullOrBlank() && !message.attachmentPath.isNullOrBlank()) {
+            when (message.messageType) {
+                "IMAGE" -> "📷 Photo"
+                "VIDEO" -> "🎥 Video"
+                "VOICE" -> "🎤 Voice message"
+                else -> "📎 Document"
+            }
+        } else {
+            message.messageText
+        }
+    }
     return ChatEntity(
         id = id,
         otherUserId = otherUser.id,
@@ -123,7 +135,7 @@ fun ChatResponse.toEntity(): ChatEntity {
         otherDisplayName = otherUser.displayName,
         otherProfilePictureUrl = otherUser.profilePictureUrl,
         otherStatus = otherUser.status ?: "OFFLINE",
-        lastMessageText = lastMessage?.messageText,
+        lastMessageText = previewText,
         lastMessageSenderId = lastMessage?.senderId,
         lastMessageStatus = lastMessage?.deliveryStatus ?: "SENT",
         lastMessageAt = lastMessage?.createdAt?.toEpochMillis(),

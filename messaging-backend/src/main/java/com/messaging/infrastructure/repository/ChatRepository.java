@@ -46,8 +46,8 @@ public interface ChatRepository extends JpaRepository<Chat, Long> {
            "ORDER BY c.lastMessageAt DESC")
     Page<Chat> findArchivedUserChats(@Param("userId") Long userId, Pageable pageable);
 
-    @Query("SELECT c FROM Chat c WHERE " +
+    @Query("SELECT c FROM Chat c JOIN ChatUserPreference p ON p.chat = c WHERE " +
            "(c.user1.id = :userId OR c.user2.id = :userId) AND " +
-           "c.isPinned = true")
+           "p.user.id = :userId AND p.isPinned = true")
     Page<Chat> findPinnedChats(@Param("userId") Long userId, Pageable pageable);
 }

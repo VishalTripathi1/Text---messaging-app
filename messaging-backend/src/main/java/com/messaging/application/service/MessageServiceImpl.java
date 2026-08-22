@@ -63,8 +63,6 @@ public class MessageServiceImpl implements MessageService {
                     Chat newChat = Chat.builder()
                             .user1(firstUser)
                             .user2(secondUser)
-                            .isPinned(false)
-                            .isArchived(false)
                             .build();
                     return chatRepository.save(newChat);
                 });
@@ -130,9 +128,13 @@ public class MessageServiceImpl implements MessageService {
         if (request.getGroupId() != null) {
             group = groupRepository.findById(request.getGroupId())
                     .orElseThrow(() -> new ResourceNotFoundException("Group not found"));
+            if (groupMemberRepository.findByGroupIdAndUserId(group.getId(), senderId).isEmpty()) {
+                throw new BadRequestException("You are not a member of this group");
+            }
         } else if (request.getChatId() != null) {
             chat = chatRepository.findById(request.getChatId())
                     .orElseThrow(() -> new ResourceNotFoundException("Chat not found"));
+            ensureChatParticipant(chat, senderId);
         } else if (request.getRecipientId() != null) {
             ChatResponse chatResponse = getOrCreateChat(senderId, request.getRecipientId());
             chat = chatRepository.findById(chatResponse.getId()).orElse(null);
@@ -264,13 +266,20 @@ public class MessageServiceImpl implements MessageService {
     @Override
     @Transactional
     public void markChatAsRead(Long userId, Long chatId) {
+        Chat chat = chatRepository.findById(chatId)
+                .orElseThrow(() -> new ResourceNotFoundException("Chat not found"));
+        ensureChatParticipant(chat, userId);
         List<Message> unreadMessages = messageRepository.findUnreadMessagesInChat(chatId, userId);
 
         for (Message message : unreadMessages) {
-            readReceiptRepository.save(ReadReceipt.builder()
-                    .message(message)
-                    .user(userRepository.getReferenceById(userId))
-                    .build());
+            // The query excludes existing receipts, but retain this guard so concurrent REST
+            // and WebSocket read events cannot violate the database uniqueness constraint.
+            if (readReceiptRepository.findByMessageIdAndUserId(message.getId(), userId).isEmpty()) {
+                readReceiptRepository.save(ReadReceipt.builder()
+                        .message(message)
+                        .user(userRepository.getReferenceById(userId))
+                        .build());
+            }
         }
     }
 
@@ -419,7 +428,10 @@ public class MessageServiceImpl implements MessageService {
                 .groupId(message.getGroup() != null ? message.getGroup().getId() : null)
                 .senderId(message.getSender().getId())
                 .senderUsername(message.getSender().getUsername())
-                .messageText(message.getMessageText())
+                // Always derive the tombstone text from the deletion flag. This also repairs
+                // any historical rows that were marked deleted before the message text update
+                // was introduced, so every client sees the same placeholder after a sync.
+                .messageText(Boolean.TRUE.equals(message.getIsDeleted()) ? "This message was deleted" : message.getMessageText())
                 .messageType(message.getMessageType())
                 .isEdited(message.getIsEdited())
                 .editedAt(message.getEditedAt())
@@ -459,6 +471,9 @@ public class MessageServiceImpl implements MessageService {
         if (!message.getSender().getId().equals(userId)) {
             throw new BadRequestException("You can only edit your own messages");
         }
+        if (newText == null || newText.trim().isEmpty() || newText.length() > 5000) {
+            throw new BadRequestException("Edited message must contain 1 to 5000 characters");
+        }
         message.setMessageText(newText);
         message.setIsEdited(true);
         message.setEditedAt(LocalDateTime.now());
@@ -478,6 +493,9 @@ public class MessageServiceImpl implements MessageService {
         // The entity has a deletedAt column but nothing ever populated it - it silently stayed
         // null forever regardless of when (or whether) a message was actually deleted.
         message.setDeletedAt(java.time.LocalDateTime.now());
+        // Retain the message row as a deletion placeholder but remove its attachment metadata so
+        // neither client can expose a deleted file through an old cached response.
+        attachmentRepository.deleteAll(attachmentRepository.findByMessageId(messageId));
         return mapToMessageResponse(messageRepository.save(message));
     }
 
@@ -514,6 +532,7 @@ public class MessageServiceImpl implements MessageService {
     public ChatResponse togglePinChat(Long userId, Long chatId, boolean pinned) {
         Chat chat = chatRepository.findById(chatId)
                 .orElseThrow(() -> new ResourceNotFoundException("Chat not found"));
+        ensureChatParticipant(chat, userId);
         ChatUserPreference preference = chatUserPreferenceRepository.findByChatIdAndUserId(chatId, userId)
                 .orElseGet(() -> ChatUserPreference.builder().chat(chat).user(userRepository.getReferenceById(userId)).build());
         preference.setIsPinned(pinned);
@@ -526,6 +545,7 @@ public class MessageServiceImpl implements MessageService {
     public ChatResponse toggleArchiveChat(Long userId, Long chatId, boolean archived) {
         Chat chat = chatRepository.findById(chatId)
                 .orElseThrow(() -> new ResourceNotFoundException("Chat not found"));
+        ensureChatParticipant(chat, userId);
         ChatUserPreference preference = chatUserPreferenceRepository.findByChatIdAndUserId(chatId, userId)
                 .orElseGet(() -> ChatUserPreference.builder().chat(chat).user(userRepository.getReferenceById(userId)).build());
         preference.setIsArchived(archived);
@@ -548,5 +568,11 @@ public class MessageServiceImpl implements MessageService {
         return userProfileRepository.findByUserId(user.getId())
                 .map(UserProfile::getDisplayName)
                 .orElse(user.getUsername());
+    }
+
+    private void ensureChatParticipant(Chat chat, Long userId) {
+        if (!chat.getUser1().getId().equals(userId) && !chat.getUser2().getId().equals(userId)) {
+            throw new BadRequestException("You are not a participant of this chat");
+        }
     }
 }

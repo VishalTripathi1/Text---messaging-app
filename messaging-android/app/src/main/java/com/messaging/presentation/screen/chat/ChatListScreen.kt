@@ -21,11 +21,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.navigation.NavController
 import com.messaging.domain.entity.Chat
 import com.messaging.presentation.navigation.Screen
@@ -43,6 +46,28 @@ fun ChatListScreen(
 ) {
     val chats by viewModel.chats.collectAsState()
     val isConnected by viewModel.isConnected.collectAsState()
+
+    // Previously the chat list only ever synced once, in the ViewModel's init{} block. Since
+    // the ViewModel survives a simple lock-screen-then-unlock or app-backgrounded-then-resumed
+    // cycle (the process isn't killed, so init{} never runs again), nothing re-fetched the chat
+    // list or re-verified the WebSocket connection on resume. Messages sent while the app was
+    // backgrounded/the screen was locked would sit unseen until something else happened to
+    // trigger a refresh (like sending a new message yourself). This restores both on every
+    // resume, and also catches the WebSocket having silently died in the background - reconnect
+    // here is safe/idempotent (see WebSocketClient's isConnecting guard).
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.connectWebSocket()
+                viewModel.syncChats()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
     val currentUserId by viewModel.currentUserId.collectAsState()
 
     val sortedChats = remember(chats) {
@@ -192,11 +217,18 @@ fun ChatItem(
                         modifier = Modifier
                             .size(12.dp)
                             .clip(CircleShape)
-                            .background(Color(0xFF4CAF50))
                             .align(Alignment.BottomEnd)
-                            .background(MaterialTheme.colorScheme.background)
                             .padding(2.dp)
-                    )
+                            .background(MaterialTheme.colorScheme.background),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(CircleShape)
+                                .background(Color(0xFF4CAF50))
+                        )
+                    }
                 }
             }
 

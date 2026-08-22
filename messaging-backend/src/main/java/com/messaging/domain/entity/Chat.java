@@ -14,8 +14,7 @@ import java.time.LocalDateTime;
 @Table(name = "chats", indexes = {
     @Index(name = "idx_user_1", columnList = "user_id_1"),
     @Index(name = "idx_user_2", columnList = "user_id_2"),
-    @Index(name = "idx_last_message", columnList = "last_message_at"),
-    @Index(name = "idx_archived", columnList = "is_archived, user_id_1, last_message_at")
+    @Index(name = "idx_last_message", columnList = "last_message_at")
 })
 @Data
 @NoArgsConstructor
@@ -40,12 +39,6 @@ public class Chat {
 
     @Column(name = "last_message_at")
     private LocalDateTime lastMessageAt;
-
-    @Column(name = "is_pinned", nullable = false)
-    private Boolean isPinned = false;
-
-    @Column(name = "is_archived", nullable = false)
-    private Boolean isArchived = false;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)

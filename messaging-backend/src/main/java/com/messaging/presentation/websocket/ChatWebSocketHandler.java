@@ -195,6 +195,12 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             }
 
             if (recipientId != null) {
+                boolean sharesReadReceipts = userSettingsRepository.findByUserId(senderId)
+                        .map(settings -> !Boolean.FALSE.equals(settings.getShowReadReceipts()))
+                        .orElse(true);
+                if (!sharesReadReceipts) {
+                    return;
+                }
                 wsMessage.setRecipientId(recipientId);
                 String json = objectMapper.writeValueAsString(wsMessage);
                 sendToUser(recipientId, json);

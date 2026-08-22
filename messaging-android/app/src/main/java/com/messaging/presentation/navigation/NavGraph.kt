@@ -21,7 +21,6 @@ import com.messaging.presentation.screen.search.SearchScreen
 import com.messaging.presentation.screen.group.CreateGroupScreen
 
 import com.messaging.presentation.screen.splash.SplashScreen
-import com.messaging.presentation.screen.auth.LoginScreen
 
 /**
  * NavGraph - Navigation structure setup
@@ -65,6 +64,20 @@ fun NavGraph(navController: NavHostController, deepLinkChatId: Long? = null) {
             arguments = listOf(navArgument("chatId") { type = NavType.LongType })
         ) {
             ChatScreen(navController = navController)
+        }
+
+        // Groups use the same conversation UI and local storage model as chats; their ids are
+        // represented as negative chat ids throughout the Android layer.
+        composable(
+            route = Screen.GroupDetail.route,
+            arguments = listOf(navArgument("groupId") { type = NavType.LongType })
+        ) { backStackEntry ->
+            val groupId = checkNotNull(backStackEntry.arguments?.getLong("groupId"))
+            LaunchedEffect(groupId) {
+                navController.navigate(Screen.ChatDetail.withArgs((-groupId).toString())) {
+                    popUpTo(Screen.GroupDetail.withArgs(groupId.toString())) { inclusive = true }
+                }
+            }
         }
         
         composable(Screen.Profile.route) {
