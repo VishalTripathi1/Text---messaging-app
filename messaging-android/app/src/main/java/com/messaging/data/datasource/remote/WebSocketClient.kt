@@ -263,11 +263,18 @@ class WebSocketClient(
 
                                 /*
                                  * WebSocket authentication is separate from normal
-                                 * Retrofit requests. If the handshake failed because
-                                 * the access token expired, refresh it and reconnect
-                                 * using the new token.
+                                 * Retrofit requests: OkHttp's Authenticator, which refreshes the
+                                 * token for HTTP calls, is never consulted for a handshake. So the
+                                 * handshake has to recognise an auth failure itself, refresh, and
+                                 * reconnect with the new token.
+                                 *
+                                 * 403 is accepted alongside 401 because a Spring Security chain
+                                 * with no configured entry point answers an expired token with 403,
+                                 * and a proxy in front of the server may do the same. Treating only
+                                 * 401 as "re-authenticate" meant any such deployment reconnected
+                                 * forever with a token that could never work.
                                  */
-                                if (responseCode == 401) {
+                                if (responseCode == 401 || responseCode == 403) {
                                     scope.launch {
 
                                         if (isClosedIntentionally) {
@@ -276,7 +283,7 @@ class WebSocketClient(
 
                                         Log.i(
                                             "WebSocketClient",
-                                            "WebSocket received 401. Refreshing access token..."
+                                            "WebSocket handshake rejected with $responseCode. Refreshing access token..."
                                         )
 
                                         val refreshedToken =

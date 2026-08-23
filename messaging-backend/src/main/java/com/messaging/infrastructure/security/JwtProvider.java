@@ -26,6 +26,24 @@ public class JwtProvider {
     @Value("${app.jwt.refresh-expiration}")
     private long refreshTokenExpiration;
 
+    /**
+     * Reports the token lifetimes actually in force, once, at startup.
+     *
+     * application.properties defaults both to 30 days, but each is overridable by an environment
+     * variable (JWT_EXPIRATION / JWT_REFRESH_EXPIRATION) - and a deployment that quietly sets the
+     * access token to an hour looks exactly like a bug from the outside: everything works, then
+     * every request starts failing at a time nobody can account for. Printing the effective values
+     * means the deploy log answers that question directly. Note the refresh lifetime is the one
+     * that decides whether a session can renew itself silently or the user has to log in again.
+     */
+    @jakarta.annotation.PostConstruct
+    void logTokenLifetimes() {
+        log.info("JWT lifetimes in effect - access: {} min, refresh: {} min ({} days)",
+                jwtExpiration / 60_000,
+                refreshTokenExpiration / 60_000,
+                refreshTokenExpiration / 86_400_000);
+    }
+
     private SecretKey getSigningKey() {
         return Keys.hmacShaKeyFor(
                 jwtSecret.getBytes(StandardCharsets.UTF_8)

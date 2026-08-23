@@ -60,6 +60,46 @@ class ChatRepositoryImpl @Inject constructor(
     /** Half-width of the window used to recognise an already-stored message - see flushUnsentMessages(). */
     private val duplicateWindowMillis = 120_000L
 
+    /**
+     * How far along the send has got. Higher is later; -1 for anything unrecognised so an unknown
+     * value can never win against a known one.
+     */
+    private fun statusRank(status: String?): Int = when (status?.uppercase()) {
+        "FAILED" -> 0
+        "PENDING" -> 1
+        "SENT" -> 2
+        "DELIVERED" -> 3
+        "READ" -> 4
+        else -> -1
+    }
+
+    /**
+     * Returns [row] with whichever status is further along - the one it carries, or the one already
+     * stored locally for the same id.
+     *
+     * Delivery status has several independent writers (the POST response, the DELIVERY_STATUS and
+     * CHAT_MESSAGE frames, READ_RECEIPT, and every sync) and they all persist through
+     * `insertMessage`, which is REPLACE-on-conflict: whoever writes last overwrites the whole row
+     * including its status. That is what pinned a delivered message on one tick. The recipient's
+     * socket takes the message *while the server is still assembling the POST response*, so the
+     * DELIVERY_STATUS frame usually lands first and correctly writes DELIVERED - and then the HTTP
+     * response arrives carrying the status as it was before the broadcast, "SENT", and clobbers it.
+     * Nothing re-sends DELIVERY_STATUS for a message that is already delivered
+     * (MessageServiceImpl.markMessageAsDelivered only advances PENDING rows), so the tick stayed
+     * wrong for good.
+     *
+     * Delivery only ever moves forward, so the fix is to make these writes idempotent with respect
+     * to ordering rather than to try to order them.
+     */
+    private fun keepBestStatus(row: MessageEntity): MessageEntity {
+        val stored = messageDao.getDeliveryStatus(row.id) ?: return row
+        return if (statusRank(stored) > statusRank(row.deliveryStatus)) {
+            row.copy(deliveryStatus = stored)
+        } else {
+            row
+        }
+    }
+
     init {
         repositoryScope.launch {
             webSocketClient.incomingMessages.collect { wsMessage ->
@@ -230,7 +270,9 @@ class ChatRepositoryImpl @Inject constructor(
             val response = chatApiService.getChatMessages(chatId, page = 0, size = 100)
             if (response.isSuccessful && response.body() != null) {
                 val messages = response.body()!!
-                messageDao.insertMessages(messages.map { it.toEntity() })
+                messageDao.insertMessages(
+                    messages.map { keepBestStatus(it.toEntity(it.deliveryStatus ?: "SENT")) }
+                )
                 Result.success(Unit)
             } else {
                 Result.failure(Exception(parseErrorMessage(response, "Failed to sync messages")))
@@ -348,7 +390,13 @@ class ChatRepositoryImpl @Inject constructor(
             if (httpResp.isSuccessful && httpResp.body() != null) {
                 val messageResp = httpResp.body()!!
                 messageDao.deleteMessageById(newTempMessageId)
-                messageDao.insertMessage(messageResp.toEntity(messageResp.deliveryStatus ?: "SENT"))
+                // keepBestStatus, not the response's status outright: the DELIVERY_STATUS frame for
+                // this very message is usually applied before this line runs, and this response is
+                // the older of the two answers. See keepBestStatus().
+                val stored = keepBestStatus(
+                    messageResp.toEntity(messageResp.deliveryStatus ?: "SENT")
+                )
+                messageDao.insertMessage(stored)
 
                 val confirmedChatId = if (actualGroupId != null) -actualGroupId else actualChatId
                 if (confirmedChatId != null) {
@@ -357,7 +405,7 @@ class ChatRepositoryImpl @Inject constructor(
                         chatDao.insertChat(chat.copy(
                             lastMessageText = messageResp.messageText,
                             lastMessageSenderId = messageResp.senderId,
-                            lastMessageStatus = messageResp.deliveryStatus ?: "SENT",
+                            lastMessageStatus = stored.deliveryStatus,
                             lastMessageAt = messageResp.createdAt.toEpochMillis()
                         ))
                     }
@@ -507,7 +555,7 @@ class ChatRepositoryImpl @Inject constructor(
             val response = chatApiService.sendHttpMessage(request)
             if (response.isSuccessful && response.body() != null) {
                 val messageResp = response.body()!!
-                val stored = messageResp.toEntity(messageResp.deliveryStatus ?: "SENT")
+                val stored = keepBestStatus(messageResp.toEntity(messageResp.deliveryStatus ?: "SENT"))
                 messageDao.deleteMessageById(row.id)
                 messageDao.insertMessage(stored)
                 refreshChatPreview(stored)
@@ -632,7 +680,11 @@ class ChatRepositoryImpl @Inject constructor(
                     val response = gson.fromJson(jsonStr, MessageResponse::class.java)
                     
                     val isOutgoing = response.senderId == currentUserId
-                    val deliveryStatus = if (isOutgoing) "SENT" else "READ"
+                    // Incoming messages are marked READ because receiving one over an open socket
+                    // means the app is in the foreground with the conversation available. For our
+                    // own messages, trust what the server says rather than assuming "SENT" - by the
+                    // time it broadcasts, it may already know the message was delivered.
+                    val deliveryStatus = if (isOutgoing) (response.deliveryStatus ?: "SENT") else "READ"
                     
                     val groupId = response.groupId
                     if (isOutgoing && wsMessage.type == "CHAT_MESSAGE") {
@@ -648,7 +700,7 @@ class ChatRepositoryImpl @Inject constructor(
                     // chat-list preview or unread notification.
                     val isGenuinelyNewMessage = messageDao.getMessageById(response.id) == null
 
-                    val entity = response.toEntity(deliveryStatus)
+                    val entity = keepBestStatus(response.toEntity(deliveryStatus))
                     messageDao.insertMessage(entity)
 
                     val resolvedChatId = if (groupId != null) -groupId else response.chatId
@@ -729,15 +781,21 @@ class ChatRepositoryImpl @Inject constructor(
                             // We already hold this message under its real id (e.g. it was
                             // already echoed back via CHAT_MESSAGE) - just advance its
                             // status: PENDING -> SENT -> DELIVERED -> READ.
-                            messageDao.updateDeliveryStatus(messageId, status)
-                            val conversationId = existingMessage.groupId?.let { -it } ?: existingMessage.chatId
-                            if (conversationId != null) {
-                                chatDao.updateLastMessageStatus(
-                                    conversationId,
-                                    existingMessage.senderId,
-                                    existingMessage.messageText,
-                                    status
-                                )
+                            //
+                            // Only forwards, never back: a DELIVERED frame delayed behind the
+                            // recipient's read receipt would otherwise pull a blue double tick back
+                            // to grey.
+                            if (statusRank(status) > statusRank(existingMessage.deliveryStatus)) {
+                                messageDao.updateDeliveryStatus(messageId, status)
+                                val conversationId = existingMessage.groupId?.let { -it } ?: existingMessage.chatId
+                                if (conversationId != null) {
+                                    chatDao.updateLastMessageStatus(
+                                        conversationId,
+                                        existingMessage.senderId,
+                                        existingMessage.messageText,
+                                        status
+                                    )
+                                }
                             }
                         } else {
                             // This is the first confirmation for a message we just sent.
@@ -754,8 +812,21 @@ class ChatRepositoryImpl @Inject constructor(
                                 else -> null
                             }
                             if (pending != null) {
+                                val adopted = pending.copy(id = messageId, deliveryStatus = status)
                                 messageDao.deleteMessageById(pending.id)
-                                messageDao.insertMessage(pending.copy(id = messageId, deliveryStatus = status))
+                                messageDao.insertMessage(adopted)
+                                // The chat list keeps its own copy of the last message's status and
+                                // this branch never refreshed it, so a chat whose newest message had
+                                // just been delivered still showed the sending clock in the list.
+                                val conversationId = adopted.groupId?.let { -it } ?: adopted.chatId
+                                if (conversationId != null) {
+                                    chatDao.updateLastMessageStatus(
+                                        conversationId,
+                                        adopted.senderId,
+                                        adopted.messageText,
+                                        status
+                                    )
+                                }
                             }
                         }
                     }
@@ -822,7 +893,7 @@ class ChatRepositoryImpl @Inject constructor(
             val response = chatApiService.getGroupMessages(groupId, page = 0, size = 100)
             val messages = response.body()
             if (response.isSuccessful && messages != null) {
-                val entities = messages.map { it.toEntity() }
+                val entities = messages.map { keepBestStatus(it.toEntity(it.deliveryStatus ?: "SENT")) }
                 messageDao.insertMessages(entities)
                 Result.success(Unit)
             } else {
@@ -847,7 +918,7 @@ class ChatRepositoryImpl @Inject constructor(
                 val response = chatApiService.editMessage(messageId, newText)
                 val body = response.body()
                 if (response.isSuccessful && body != null) {
-                    messageDao.insertMessage(body.toEntity())
+                    messageDao.insertMessage(keepBestStatus(body.toEntity(body.deliveryStatus ?: "SENT")))
                 }
             }
             Result.success(Unit)
@@ -870,7 +941,7 @@ class ChatRepositoryImpl @Inject constructor(
                 val response = chatApiService.deleteMessage(messageId)
                 val body = response.body()
                 if (response.isSuccessful && body != null) {
-                    messageDao.insertMessage(body.toEntity())
+                    messageDao.insertMessage(keepBestStatus(body.toEntity(body.deliveryStatus ?: "SENT")))
                 }
             }
             Result.success(Unit)
@@ -955,7 +1026,7 @@ class ChatRepositoryImpl @Inject constructor(
             val response = chatApiService.searchMessages(query, page = 0, size = 50)
             val body = response.body()
             if (response.isSuccessful && body != null) {
-                Result.success(body.map { it.toEntity().toDomain() })
+                Result.success(body.map { it.toEntity(it.deliveryStatus ?: "SENT").toDomain() })
             } else {
                 Result.failure(Exception(parseErrorMessage(response, "Failed to search messages")))
             }

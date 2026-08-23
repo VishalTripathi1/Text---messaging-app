@@ -72,7 +72,18 @@ public class ChatController {
         MessageResponse message = messageService.sendMessage(principal.getId(), request);
         // REST is the reliable persistence path used by Android. Broadcast the stored response
         // exactly as the WebSocket send path does, so the recipient receives it in real time.
-        notifyMessageUpdate(principal.getId(), message, "CHAT_MESSAGE");
+        boolean delivered = notifyMessageUpdate(principal.getId(), message, "CHAT_MESSAGE");
+
+        // sendMessage() built this response *before* the broadcast above, when the only delivery
+        // row that existed was PENDING - so its deliveryStatus is always "SENT", even when the
+        // recipient was online and took the message microseconds later. The sender was therefore
+        // told "sent" by the one response it trusts most, and the DELIVERY_STATUS frame that says
+        // otherwise is written to the socket *before* this response is even flushed, so the client
+        // usually applies the frame first and then overwrites it with this staler answer: a single
+        // tick that never advanced, on a message the recipient already had.
+        if (delivered) {
+            message.setDeliveryStatus("DELIVERED");
+        }
         return ResponseEntity.ok(message);
     }
 
@@ -158,7 +169,14 @@ public class ChatController {
         return ResponseEntity.ok(message);
     }
 
-    private void notifyMessageUpdate(Long senderId, MessageResponse response, String updateType) {
+    /**
+     * Broadcasts a message change to everyone else in the conversation.
+     *
+     * @return true when this was a new message that every other participant's socket accepted, i.e.
+     *         when the message can honestly be reported as DELIVERED to its sender.
+     */
+    private boolean notifyMessageUpdate(Long senderId, MessageResponse response, String updateType) {
+        boolean isNewMessage = "CHAT_MESSAGE".equals(updateType);
         try {
             WebSocketMessage outbound = WebSocketMessage.builder()
                     .type(updateType)
@@ -176,16 +194,10 @@ public class ChatController {
                     Long recipientId = chat.getUser1().getId().equals(senderId)
                             ? chat.getUser2().getId() : chat.getUser1().getId();
                     boolean delivered = ChatWebSocketHandler.sendToUserStatic(recipientId, json);
-                    if (delivered && "CHAT_MESSAGE".equals(updateType)) {
+                    if (delivered && isNewMessage) {
                         messageService.markMessageAsDelivered(recipientId, response.getId());
-                        WebSocketMessage deliveryUpdate = WebSocketMessage.builder()
-                                .type("DELIVERY_STATUS")
-                                .senderId(recipientId)
-                                .recipientId(senderId)
-                                .chatId(response.getChatId())
-                                .payload(java.util.Map.of("messageId", response.getId(), "status", "DELIVERED"))
-                                .build();
-                        ChatWebSocketHandler.sendToUserStatic(senderId, objectMapper.writeValueAsString(deliveryUpdate));
+                        sendDeliveryStatus(senderId, recipientId, response);
+                        return true;
                     }
                 }
             } else if (response.getGroupId() != null) {
@@ -195,16 +207,46 @@ public class ChatController {
                 List<Long> memberIds = groupMemberRepository.findByGroupId(response.getGroupId())
                         .stream()
                         .map(m -> m.getUser().getId())
+                        .filter(id -> !id.equals(senderId))
                         .toList();
+                boolean allDelivered = !memberIds.isEmpty();
                 for (Long memberId : memberIds) {
-                    if (!memberId.equals(senderId)) {
-                        ChatWebSocketHandler.sendToUserStatic(memberId, json);
+                    boolean delivered = ChatWebSocketHandler.sendToUserStatic(memberId, json);
+                    // This branch used to forward the frame and stop there - it never recorded the
+                    // delivery - so a group message's DeliveryStatus rows stayed PENDING even
+                    // though every member had it on screen, and group ticks never left one tick.
+                    if (delivered && isNewMessage) {
+                        messageService.markMessageAsDelivered(memberId, response.getId());
+                    } else {
+                        allDelivered = false;
                     }
+                }
+                // mapToMessageResponse aggregates group status as all-or-nothing, so the sender is
+                // only told DELIVERED once every other member has actually received it. Members
+                // who were offline get marked when their socket connects, via
+                // ChatWebSocketHandler.processPendingDeliveries.
+                if (allDelivered && isNewMessage) {
+                    sendDeliveryStatus(senderId, senderId, response);
+                    return true;
                 }
             }
         } catch (Exception e) {
             log.error("Failed to broadcast message update for messageId {}: {}", response.getId(), e.getMessage());
         }
+        return false;
+    }
+
+    /** Tells [senderId] that their message has reached its recipients. */
+    private void sendDeliveryStatus(Long senderId, Long reporterId, MessageResponse response) throws Exception {
+        WebSocketMessage deliveryUpdate = WebSocketMessage.builder()
+                .type("DELIVERY_STATUS")
+                .senderId(reporterId)
+                .recipientId(senderId)
+                .chatId(response.getChatId())
+                .groupId(response.getGroupId())
+                .payload(java.util.Map.of("messageId", response.getId(), "status", "DELIVERED"))
+                .build();
+        ChatWebSocketHandler.sendToUserStatic(senderId, objectMapper.writeValueAsString(deliveryUpdate));
     }
 
     @PostMapping("/message/{messageId}/react")

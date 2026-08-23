@@ -20,6 +20,15 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE id = :messageId")
     fun getMessageById(messageId: Long): MessageEntity?
 
+    /**
+     * The status we already hold for a message, or null if we don't have it at all.
+     *
+     * Used to keep delivery status monotonic across the several independent writers that all
+     * REPLACE the same row - see ChatRepositoryImpl.keepBestStatus().
+     */
+    @Query("SELECT deliveryStatus FROM messages WHERE id = :messageId")
+    fun getDeliveryStatus(messageId: Long): String?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun insertMessages(messages: List<MessageEntity>)
 

@@ -3,6 +3,7 @@ package com.messaging.config;
 import com.messaging.infrastructure.security.JwtProvider;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.server.ServerHttpRequest;
 import org.springframework.http.server.ServerHttpResponse;
 import org.springframework.http.server.ServletServerHttpRequest;
@@ -54,7 +55,14 @@ public class AuthHandshakeInterceptor implements HandshakeInterceptor {
             }
         }
 
-        log.warn("WebSocket handshake failed");
+        // Returning false aborts the handshake, but Spring sends whatever status is on the
+        // response - and with none set that is a plain 200, which reads to the client as "the
+        // server answered but didn't upgrade". The Android side only refreshes its token when the
+        // handshake fails with 401 (see WebSocketClient.onFailure), so an expired token produced
+        // an endless reconnect loop that retried the same dead token every few seconds forever.
+        // Saying 401 out loud lets the client recognise it and re-authenticate.
+        response.setStatusCode(HttpStatus.UNAUTHORIZED);
+        log.warn("WebSocket handshake rejected: missing, expired or invalid token");
         return false;
     }
 

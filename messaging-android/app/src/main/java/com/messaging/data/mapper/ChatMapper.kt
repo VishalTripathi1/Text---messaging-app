@@ -169,7 +169,14 @@ fun GroupResponse.toEntity(): ChatEntity {
     )
 }
 
-fun MessageResponse.toEntity(deliveryStatus: String = "DELIVERED"): MessageEntity {
+/**
+ * [deliveryStatus] is required rather than defaulted on purpose. It used to default to
+ * "DELIVERED", which meant every message pulled by a sync was drawn with a double tick whether or
+ * not it had ever reached anybody - and, worse, hid the real bug: a sync could silently *downgrade*
+ * a message the server had told us was READ. Callers now have to say what the status is, and every
+ * one of them takes it from the server's own `deliveryStatus` field.
+ */
+fun MessageResponse.toEntity(deliveryStatus: String): MessageEntity {
     val mappedReactions = reactions?.map {
         Reaction(
             userId = it.userId,
