@@ -53,16 +53,30 @@ public interface ChatRepository extends JpaRepository<Chat, Long> {
     Page<Chat> findUserChats(@Param("userId") Long userId, Pageable pageable);
 
     /**
-     * Same as findUserChats but excludes chats the user has archived for themselves. Archive
-     * state now lives per-user in ChatUserPreference (a chat that one participant archives no
-     * longer disappears for the other participant too, which is what the old global
-     * Chat.isArchived flag caused). Using a LEFT JOIN with COALESCE means a chat with no
+     * Same as findUserChats but excludes chats the user has archived for themselves, and chats where
+     * nothing has been said yet. Archive state now lives per-user in ChatUserPreference (a chat that
+     * one participant archives no longer disappears for the other participant too, which is what the
+     * old global Chat.isArchived flag caused). Using a LEFT JOIN with COALESCE means a chat with no
      * preference row yet (the common case - most chats are never archived) still comes through
      * correctly as "not archived" by default.
+     *
+     * <p>The EXISTS clause keeps empty chats out of the list. Tapping a contact in the new-chat
+     * screen calls getOrCreateChat, which inserts the row immediately, so without this filter every
+     * browsed contact would pile up in the chat list showing "No messages yet". The row is still
+     * created - tapping the same contact again returns the same chat - it just stays hidden until
+     * there is something in it.
+     *
+     * <p>Deliberately tests for a real message rather than {@code c.lastMessageId IS NOT NULL}.
+     * Those two agree for any chat this app created, but mapToChatResponse repairs a missing
+     * lastMessageId by looking up the latest message, and filtering on that column would hide such
+     * a chat from the list before the repair could ever run - permanently. Soft-deleted messages
+     * are counted on purpose: deleting the last message in a conversation should not make the whole
+     * conversation vanish. Backed by the idx_chat index on messages (chat_id, created_at).
      */
     @Query("SELECT c FROM Chat c LEFT JOIN ChatUserPreference p ON p.chat = c AND p.user.id = :userId WHERE " +
            "(c.user1.id = :userId OR c.user2.id = :userId) AND " +
-           "COALESCE(p.isArchived, false) = false " +
+           "COALESCE(p.isArchived, false) = false AND " +
+           "EXISTS (SELECT 1 FROM Message m WHERE m.chat = c) " +
            "ORDER BY c.lastMessageAt DESC")
     Page<Chat> findUserChatsExcludingArchived(@Param("userId") Long userId, Pageable pageable);
 
