@@ -486,7 +486,118 @@ public class MessageServiceImpl implements MessageService {
         message.setMessageText(newText);
         message.setIsEdited(true);
         message.setEditedAt(LocalDateTime.now());
-        return mapToMessageResponse(messageRepository.save(message));
+        Message savedMessage = messageRepository.save(message);
+
+        // An edit replaces what the message says, so anyone who had already read it has now read
+        // something that is no longer there - the edit has to come back to their attention the same
+        // way a new message would.
+        //
+        // Dropping their read receipts is the whole mechanism. Unread counts are *derived* from the
+        // absence of a receipt (see ReadReceiptRepository.countUnreadMessagesInChat), so removing
+        // the row makes the message unread again with no extra state and no schema change, and
+        // markChatAsRead() recreates it when they next open the conversation.
+        //
+        // Deleted one at a time through the existing finder rather than as a bulk JPQL delete: a
+        // bulk delete bypasses the persistence context, so the read-receipt lookup that
+        // mapToMessageResponse() performs below could still be answered from Hibernate's cache and
+        // report the message as READ. Recipient counts here are one (private) or the group's
+        // membership, so the extra queries are cheap.
+        List<Long> recipientIds = otherParticipantIds(savedMessage, userId);
+        for (Long recipientId : recipientIds) {
+            readReceiptRepository.findByMessageIdAndUserId(savedMessage.getId(), recipientId)
+                    .ifPresent(readReceiptRepository::delete);
+        }
+
+        MessageResponse response = mapToMessageResponse(savedMessage);
+        // Editing a deleted message leaves it reading "This message was deleted" on every client,
+        // so there is nothing worth waking anyone up for.
+        if (!Boolean.TRUE.equals(savedMessage.getIsDeleted())) {
+            pushMessageChange(savedMessage, userId, recipientIds, "MESSAGE_EDITED",
+                    "Edited: " + excerpt(newText));
+        }
+        return response;
+    }
+
+    /**
+     * Everybody in this message's conversation other than {@code actorId}: the other participant of
+     * a private chat, or every group member but the actor.
+     */
+    private List<Long> otherParticipantIds(Message message, Long actorId) {
+        if (message.getChat() != null) {
+            Chat chat = message.getChat();
+            Long otherId = chat.getUser1().getId().equals(actorId)
+                    ? chat.getUser2().getId() : chat.getUser1().getId();
+            return List.of(otherId);
+        }
+        if (message.getGroup() != null) {
+            return groupMemberRepository.findByGroupId(message.getGroup().getId())
+                    .stream()
+                    .map(m -> m.getUser().getId())
+                    .filter(id -> !id.equals(actorId))
+                    .collect(Collectors.toList());
+        }
+        return List.of();
+    }
+
+    /**
+     * Pushes a change to an existing message (an edit, a reaction) to the people who should hear
+     * about it.
+     *
+     * <p>Deliberately mirrors the two push blocks in {@link #sendMessage}: a private-chat push is
+     * titled with the actor's display name and is suppressed when the recipient has archived the
+     * chat, which is how muting works here; a group push is titled "&lt;group&gt; (&lt;actor&gt;)"
+     * and carries {@code groupId} instead of {@code chatId} so the client can resolve it to the
+     * negative chat id it addresses groups by. {@code type} tells the client which conversation
+     * field to read and is matched in MessagingFirebaseService.onMessageReceived.
+     *
+     * <p>The recipient's own notifications-enabled setting is enforced one level down, inside
+     * {@link PushNotificationService#sendPushNotification}.
+     */
+    private void pushMessageChange(Message message, Long actorId, List<Long> recipientIds,
+                                   String type, String body) {
+        User actor = userRepository.findById(actorId).orElse(null);
+        if (actor == null) {
+            return;
+        }
+        Chat chat = message.getChat();
+        Group group = message.getGroup();
+        for (Long recipientId : recipientIds) {
+            if (recipientId.equals(actorId)) {
+                continue;
+            }
+            String title;
+            Map<String, String> data;
+            if (chat != null) {
+                boolean recipientArchivedThisChat = chatUserPreferenceRepository
+                        .findByChatIdAndUserId(chat.getId(), recipientId)
+                        .map(p -> Boolean.TRUE.equals(p.getIsArchived()))
+                        .orElse(false);
+                if (recipientArchivedThisChat) {
+                    continue;
+                }
+                title = getUserDisplayName(actor);
+                data = Map.of("chatId", chat.getId().toString(), "type", type);
+            } else if (group != null) {
+                title = group.getGroupName() + " (" + getUserDisplayName(actor) + ")";
+                data = Map.of("groupId", group.getId().toString(), "type", type);
+            } else {
+                continue;
+            }
+            pushNotificationService.sendPushNotification(recipientId, title, body, data);
+        }
+    }
+
+    /**
+     * A one-line, notification-sized version of a message body. Message text runs to 5000
+     * characters and an FCM data payload is capped at 4KB, so quoting it whole risks the push being
+     * rejected outright.
+     */
+    private String excerpt(String text) {
+        if (text == null) {
+            return "";
+        }
+        String oneLine = text.replaceAll("\\s+", " ").trim();
+        return oneLine.length() <= 80 ? oneLine : oneLine.substring(0, 79) + "…";
     }
 
     @Override
@@ -513,6 +624,7 @@ public class MessageServiceImpl implements MessageService {
     public MessageResponse addOrUpdateReaction(Long userId, Long messageId, String reaction) {
         Message message = messageRepository.findById(messageId)
                 .orElseThrow(() -> new ResourceNotFoundException("Message not found"));
+        ensureConversationMember(message, userId);
         User user = userRepository.getReferenceById(userId);
         
         MessageReaction messageReaction = messageReactionRepository.findByMessageIdAndUserId(messageId, userId)
@@ -523,6 +635,20 @@ public class MessageServiceImpl implements MessageService {
         
         messageReaction.setReaction(reaction);
         messageReactionRepository.save(messageReaction);
+
+        // Only the message's author is told, in private chats and groups alike. Everyone else in a
+        // group has no stake in who reacted to somebody else's message, and telling them turns one
+        // popular message into a push per member per reaction.
+        //
+        // No unread bump to go with it, unlike an edit: a reaction doesn't change what the message
+        // says, so a badge promising something new to read would be a lie. Removing a reaction is
+        // silent too - see removeReaction.
+        Long authorId = message.getSender().getId();
+        boolean reactingToOwnMessage = authorId.equals(userId);
+        if (!reactingToOwnMessage && !Boolean.TRUE.equals(message.getIsDeleted())) {
+            pushMessageChange(message, userId, List.of(authorId), "MESSAGE_REACTION",
+                    "Reacted " + reaction + " to: " + excerpt(message.getMessageText()));
+        }
         return mapToMessageResponse(message);
     }
 
@@ -531,9 +657,32 @@ public class MessageServiceImpl implements MessageService {
     public MessageResponse removeReaction(Long userId, Long messageId) {
         Message message = messageRepository.findById(messageId)
                 .orElseThrow(() -> new ResourceNotFoundException("Message not found"));
+        ensureConversationMember(message, userId);
         messageReactionRepository.findByMessageIdAndUserId(messageId, userId)
                 .ifPresent(messageReactionRepository::delete);
         return mapToMessageResponse(message);
+    }
+
+    /**
+     * Rejects anyone who is not in the conversation this message belongs to.
+     *
+     * <p>The reaction endpoints took a message id straight from the URL and never checked it, the
+     * same hole {@link #getChatMessages} had: any authenticated user could react to any message just
+     * by guessing an id. Harmless-looking until a reaction started notifying the message's author -
+     * at that point the unchecked endpoint becomes a way to send somebody push notifications by
+     * walking the id space. Reuses the isUserInChat/isUserInGroup queries already in
+     * MessageRepository.
+     */
+    private void ensureConversationMember(Message message, Long userId) {
+        if (message.getChat() != null) {
+            if (!messageRepository.isUserInChat(message.getChat().getId(), userId)) {
+                throw new BadRequestException("You are not a participant of this chat");
+            }
+        } else if (message.getGroup() != null) {
+            if (!messageRepository.isUserInGroup(message.getGroup().getId(), userId)) {
+                throw new BadRequestException("You are not a member of this group");
+            }
+        }
     }
 
     @Override

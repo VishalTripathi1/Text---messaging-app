@@ -69,6 +69,15 @@ class ChatViewModel @Inject constructor(
     // separate mark-as-read requests.
     private var lastAcknowledgedIncomingId = 0L
 
+    // Companion to the high-water mark above, for edits. An edit does not create a message, so the
+    // highest id does not move and the mark-as-read below would never fire - yet the server has just
+    // dropped this reader's read receipt to make the edit unread (see
+    // MessageServiceImpl.editMessage). Left alone, a conversation open on screen would grow an
+    // unread badge for an edit the reader is looking at, and the sender's tick would stay stuck at
+    // one short of read. Hashing the incoming text catches a changed message as well as a new one,
+    // and needs no extra column: MessageEntity does not store editedAt.
+    private var lastAcknowledgedIncomingRevision = 0
+
     // Becomes true once chat metadata (in particular otherUserId, needed to route messages to
     // the recipient in real time over WebSocket) has finished loading. sendMessage() suspends
     // on this so that messages typed immediately after opening a chat aren't sent with a null
@@ -151,11 +160,18 @@ class ChatViewModel @Inject constructor(
                     if (!visible) return@collect
                     // Negative ids are locally-created outgoing messages awaiting a server id, so
                     // an incoming message always has a real one.
-                    val newestIncoming = list
-                        .filter { it.senderId != meId && it.id > 0 }
-                        .maxOfOrNull { it.id } ?: return@collect
-                    if (newestIncoming > lastAcknowledgedIncomingId) {
-                        lastAcknowledgedIncomingId = newestIncoming
+                    val incoming = list.filter { it.senderId != meId && it.id > 0 }
+                    val newestIncoming = incoming.maxOfOrNull { it.id } ?: return@collect
+                    // Changes when a message is added *or* when one of them is edited, which the
+                    // id high-water mark alone cannot see. See lastAcknowledgedIncomingRevision.
+                    val revision = incoming.fold(7) { acc, message ->
+                        acc * 31 + message.id.hashCode() * 31 + (message.messageText?.hashCode() ?: 0)
+                    }
+                    if (newestIncoming > lastAcknowledgedIncomingId ||
+                        revision != lastAcknowledgedIncomingRevision
+                    ) {
+                        lastAcknowledgedIncomingId = maxOf(lastAcknowledgedIncomingId, newestIncoming)
+                        lastAcknowledgedIncomingRevision = revision
                         markAsRead()
                     }
                 }

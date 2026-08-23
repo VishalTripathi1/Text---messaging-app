@@ -698,7 +698,23 @@ class ChatRepositoryImpl @Inject constructor(
                     // Message and reaction updates use dedicated event types. REPLACE-on-insert
                     // applies them locally without turning an edit of an old message into a new
                     // chat-list preview or unread notification.
-                    val isGenuinelyNewMessage = messageDao.getMessageById(response.id) == null
+                    val existingRow = messageDao.getMessageById(response.id)
+                    val isGenuinelyNewMessage = existingRow == null
+
+                    // An edit has to come back to the reader's attention like a new message. Keyed
+                    // on the text actually having changed rather than just on isEdited, so a
+                    // repeated frame for an edit we have already applied - the socket frame and the
+                    // FCM push both arrive when the app is in the foreground - cannot bump the badge
+                    // twice for one edit.
+                    //
+                    // Deletes travel as MESSAGE_UPDATE too, hence the isDeleted guard: a message
+                    // being withdrawn is not something to mark unread.
+                    val isIncomingEdit = wsMessage.type == "MESSAGE_UPDATE" &&
+                            !isOutgoing &&
+                            response.isEdited &&
+                            !response.isDeleted &&
+                            existingRow != null &&
+                            existingRow.messageText != response.messageText
 
                     val entity = keepBestStatus(response.toEntity(deliveryStatus))
                     messageDao.insertMessage(entity)
@@ -757,6 +773,35 @@ class ChatRepositoryImpl @Inject constructor(
                                     senderId = response.senderId,
                                     at = response.createdAt.toEpochMillis()
                                 )
+                            }
+                        } else if (chat != null && isIncomingEdit) {
+                            // The server has already dropped this reader's read receipt for the
+                            // message (see MessageServiceImpl.editMessage), which is what makes it
+                            // unread for real; a private chat's badge would therefore correct itself
+                            // on the next syncChats(). Doing it locally as well shows the badge
+                            // immediately, and is the *only* mechanism groups have - group unread is
+                            // client-side only, with no server-side equivalent of
+                            // countUnreadMessagesInChat. The local value is transient for private
+                            // chats: syncChats() overwrites it with the server's authoritative count,
+                            // so the two can never compound.
+                            //
+                            // The preview only moves if the edited message is the newest one.
+                            // Editing something said hours ago must not rewrite the chat list to
+                            // claim those are the conversation's latest words.
+                            val latest = if (groupId != null) {
+                                messageDao.getLatestMessageForGroup(groupId)
+                            } else {
+                                messageDao.getLatestMessageForChat(resolvedChatId)
+                            }
+                            if (latest?.id == response.id) {
+                                chatDao.incrementUnreadAndUpdateLastMessage(
+                                    chatId = resolvedChatId,
+                                    text = response.messageText,
+                                    senderId = response.senderId,
+                                    at = response.createdAt.toEpochMillis()
+                                )
+                            } else {
+                                chatDao.incrementUnreadCount(resolvedChatId)
                             }
                         }
                     }

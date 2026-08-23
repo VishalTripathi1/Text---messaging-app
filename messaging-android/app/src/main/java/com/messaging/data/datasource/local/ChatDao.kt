@@ -50,6 +50,18 @@ interface ChatDao {
     )
     fun updateLastMessageOnly(chatId: Long, text: String?, senderId: Long?, at: Long)
 
+    /**
+     * Bumps the unread badge without touching the last-message preview.
+     *
+     * Needed by the edited-message path: an edit makes the message unread again, but the message
+     * being edited can sit anywhere in the history. Reusing incrementUnreadAndUpdateLastMessage()
+     * would rewrite the chat-list preview with the edited text even when that message is not the
+     * newest one, so the list would claim the conversation's last words were something said hours
+     * ago. See ChatRepositoryImpl.handleIncomingWebSocketMessage.
+     */
+    @Query("UPDATE chats SET unreadCount = unreadCount + 1 WHERE id = :chatId")
+    fun incrementUnreadCount(chatId: Long)
+
     @Query("UPDATE chats SET lastMessageStatus = :status WHERE id = :chatId AND lastMessageSenderId = :senderId AND lastMessageText = :text")
     fun updateLastMessageStatus(chatId: Long, senderId: Long, text: String?, status: String)
 

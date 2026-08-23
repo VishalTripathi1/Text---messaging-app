@@ -81,6 +81,15 @@ class MessagingFirebaseService : FirebaseMessagingService() {
         val deepLinkChatId: Long? = when (type) {
             "CHAT_MESSAGE" -> remoteMessage.data["chatId"]?.toLongOrNull()
             "GROUP_MESSAGE" -> remoteMessage.data["groupId"]?.toLongOrNull()?.let { -it }
+            // An edited message and a reaction can land on either kind of conversation, so the
+            // backend sends whichever id applies (see MessageServiceImpl.pushMessageChange) and we
+            // follow the one that is present. Without these two cases the push still appeared but
+            // fell through to `else -> null`, which means no deep link *and* no Room sync - the
+            // notification would open the app to whatever screen it started on and the edit would
+            // not be visible until some later sync happened to pick it up.
+            "MESSAGE_EDITED", "MESSAGE_REACTION" ->
+                remoteMessage.data["chatId"]?.toLongOrNull()
+                    ?: remoteMessage.data["groupId"]?.toLongOrNull()?.let { -it }
             else -> null
         }
         Timber.d("Push type=$type deepLinkChatId=$deepLinkChatId data=${remoteMessage.data}")
