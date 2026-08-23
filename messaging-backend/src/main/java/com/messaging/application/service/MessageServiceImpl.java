@@ -60,11 +60,20 @@ public class MessageServiceImpl implements MessageService {
 
         Chat chat = chatRepository.findChatBetweenUsers(firstUser.getId(), secondUser.getId())
                 .orElseGet(() -> {
-                    Chat newChat = Chat.builder()
-                            .user1(firstUser)
-                            .user2(secondUser)
-                            .build();
-                    return chatRepository.save(newChat);
+                    // Two requests for the same pair arriving together - a double tap on a search
+                    // result, or both participants opening the conversation at the same moment -
+                    // each miss the lookup above and each try to insert. The ID ordering only
+                    // keeps the columns consistent; on its own it does not stop a second row, so
+                    // the pair ended up with two chats and each device wrote its messages into a
+                    // different one. insertIfAbsent leans on the database's unique index to let
+                    // whichever request loses the race quietly no-op, then both re-read the one
+                    // surviving row. The re-read cannot come back empty: ON CONFLICT waits on the
+                    // other transaction and sees its row once it commits.
+                    chatRepository.insertIfAbsent(firstUser.getId(), secondUser.getId());
+                    return chatRepository.findChatBetweenUsers(firstUser.getId(), secondUser.getId())
+                            .orElseThrow(() -> new IllegalStateException(
+                                    "Chat row absent immediately after insert for users "
+                                            + firstUser.getId() + " and " + secondUser.getId()));
                 });
 
         return mapToChatResponse(chat, userId);

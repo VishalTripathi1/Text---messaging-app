@@ -23,18 +23,16 @@ import com.messaging.presentation.navigation.Screen
 @Composable
 fun SplashScreen(
     navController: NavController,
-    deepLinkChatId: Long? = null,
     viewModel: SplashViewModel = hiltViewModel()
 ) {
     val isLoggedIn by viewModel.isLoggedIn.collectAsState()
 
-    LaunchedEffect(isLoggedIn, deepLinkChatId) {
+    // Only the auth decision lives here. A pending notification deep link is applied by NavGraph
+    // once this navigation has landed, so the chat opens on top of the chat list (Back returns
+    // there) and the two navigate() calls can't race each other.
+    LaunchedEffect(isLoggedIn) {
         isLoggedIn?.let { authenticated ->
-            val targetRoute = when {
-                !authenticated -> Screen.Login.route
-                deepLinkChatId != null -> Screen.ChatDetail.withArgs(deepLinkChatId.toString())
-                else -> Screen.ChatList.route
-            }
+            val targetRoute = if (authenticated) Screen.ChatList.route else Screen.Login.route
             navController.navigate(targetRoute) {
                 popUpTo(Screen.Splash.route) { inclusive = true }
             }

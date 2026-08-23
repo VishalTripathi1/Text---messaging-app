@@ -11,6 +11,7 @@ import androidx.navigation.compose.rememberNavController
 import com.google.firebase.messaging.FirebaseMessaging
 import com.messaging.domain.repository.ChatRepository
 import com.messaging.presentation.navigation.NavGraph
+import com.messaging.presentation.navigation.PendingDeepLink
 import com.messaging.presentation.theme.MessagingTheme
 import com.messaging.util.TokenManager
 import androidx.compose.runtime.collectAsState
@@ -31,6 +32,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_DEEP_LINK_CHAT_ID = "deep_link_chat_id"
+        private const val NO_DEEP_LINK = Long.MIN_VALUE
     }
 
     @Inject
@@ -39,11 +41,15 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var tokenManager: TokenManager
 
-    // Holds a chat to navigate straight to once the app has finished its normal startup
-    // routing (splash -> auth check). Read from the launch intent below, and refreshed via
-    // onNewIntent() for the case where the app is already running and the user taps another
-    // notification.
-    private val deepLinkChatId = mutableStateOf<Long?>(null)
+    // Holds a chat to navigate to once startup routing (splash -> auth check) has settled. Read
+    // from the launch intent below, and refreshed via onNewIntent() for the case where the app is
+    // already running and the user taps another notification.
+    private val pendingDeepLink = mutableStateOf<PendingDeepLink?>(null)
+
+    // Each tap gets its own nonce. Two notifications for the same chat would otherwise write an
+    // identical Long into the state above, Compose would see no change, and the navigation
+    // effect in NavGraph would never re-run - so the second tap would silently do nothing.
+    private var deepLinkNonce = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,10 +77,14 @@ class MainActivity : ComponentActivity() {
                 "LIGHT" -> false
                 else -> androidx.compose.foundation.isSystemInDarkTheme()
             }
-            val pendingChatId by deepLinkChatId
+            val deepLink by pendingDeepLink
             MessagingTheme(darkTheme = useDarkTheme) {
                 val navController = rememberNavController()
-                NavGraph(navController = navController, deepLinkChatId = pendingChatId)
+                NavGraph(
+                    navController = navController,
+                    deepLink = deepLink,
+                    onDeepLinkHandled = { pendingDeepLink.value = null }
+                )
             }
         }
     }
@@ -86,10 +96,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun readDeepLinkFromIntent(intent: Intent?) {
-        val chatId = intent?.getLongExtra(EXTRA_DEEP_LINK_CHAT_ID, Long.MIN_VALUE) ?: Long.MIN_VALUE
-        if (chatId != Long.MIN_VALUE) {
-            deepLinkChatId.value = chatId
-        }
+        intent ?: return
+        val chatId = intent.getLongExtra(EXTRA_DEEP_LINK_CHAT_ID, NO_DEEP_LINK)
+        if (chatId == NO_DEEP_LINK) return
+        Timber.d("Deep link intent: chatId=$chatId")
+
+        // Consume the extra. It lives on the activity's intent, which survives configuration
+        // changes and process restore, so leaving it in place makes every later onCreate() replay
+        // the same deep link and yank the user out of whatever screen they were on.
+        intent.removeExtra(EXTRA_DEEP_LINK_CHAT_ID)
+        pendingDeepLink.value = PendingDeepLink(chatId = chatId, nonce = deepLinkNonce++)
     }
 
     private fun registerFcmToken() {

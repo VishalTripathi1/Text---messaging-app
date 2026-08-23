@@ -18,9 +18,17 @@ sealed class Screen(val route: String) {
     fun withArgs(vararg args: String): String {
         var resolvedRoute = route
         args.forEach { arg ->
-            val placeholder = Regex("\\{[^}]+}").find(resolvedRoute) ?: return@forEach
+            val placeholder = PLACEHOLDER.find(resolvedRoute) ?: return@forEach
             resolvedRoute = resolvedRoute.replaceRange(placeholder.range, arg)
         }
         return resolvedRoute
+    }
+
+    private companion object {
+        // The closing brace has to be escaped. Desktop JVMs accept a bare "}" outside a
+        // quantifier, but Android 16 (API 36) compiles patterns through ICU instead, which
+        // rejects it with PatternSyntaxException at Regex construction time. Compiled once
+        // here rather than per argument inside withArgs().
+        private val PLACEHOLDER = Regex("""\{[^}]+\}""")
     }
 }

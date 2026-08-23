@@ -77,8 +77,24 @@ class MessagingFirebaseService : FirebaseMessagingService() {
             "GROUP_MESSAGE" -> remoteMessage.data["groupId"]?.toLongOrNull()?.let { -it }
             else -> null
         }
+        Timber.d("Push type=$type deepLinkChatId=$deepLinkChatId data=${remoteMessage.data}")
 
         showNotification(title, body, deepLinkChatId)
+
+        // Pull the message into the local database. A push is the only delivery route while the
+        // app is backgrounded - the OS drops the WebSocket, so the server's sendToUserStatic()
+        // fails and it falls back to FCM (see ChatController.notifyMessageUpdate). Nothing here
+        // touched Room, so the message existed only server-side: the notification appeared, but
+        // the chat list preview and the conversation itself stayed stale until some screen's
+        // ON_RESUME happened to sync. syncMessages() takes the same negative-id convention for
+        // groups that deepLinkChatId already uses, so it can be passed straight through.
+        if (deepLinkChatId != null) {
+            serviceScope.launch {
+                chatRepository.syncMessages(deepLinkChatId)
+                    .onFailure { Timber.e(it, "Failed to sync messages for chat $deepLinkChatId after push") }
+                chatRepository.syncChats()
+            }
+        }
     }
 
     @SuppressLint("NotificationPermission")
@@ -98,21 +114,32 @@ class MessagingFirebaseService : FirebaseMessagingService() {
         }
 
         val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            // FLAG_ACTIVITY_NEW_TASK is required because the intent is launched from a service
+            // context, not from an activity. Paired with the manifest's singleTop launchMode it
+            // brings the existing task forward and delivers to onNewIntent() rather than
+            // building a second copy of MainActivity.
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             if (deepLinkChatId != null) {
                 putExtra(MainActivity.EXTRA_DEEP_LINK_CHAT_ID, deepLinkChatId)
             }
         }
-        // The requestCode was previously hardcoded to 0 for every notification, which meant
-        // every notification's PendingIntent could be conflated as "the same" by the system -
-        // tapping any of them could resolve to a stale intent from a different chat rather than
-        // the one that was actually tapped. Using the chatId (falling back to a value derived
-        // from the current time so unrelated notifications still get distinct request codes)
-        // keeps each notification's PendingIntent genuinely unique.
-        val requestCode = deepLinkChatId?.hashCode() ?: System.currentTimeMillis().toInt()
+
+        // One notification, and one PendingIntent request code, per conversation. A newer
+        // message replaces that chat's existing notification instead of stacking a fresh one,
+        // which also guarantees the visible notification always holds the current PendingIntent.
+        // Messages with no chat context keep unique ids so they don't collapse into each other.
+        val notificationId = deepLinkChatId?.let { (it xor (it ushr 32)).toInt() }
+            ?: System.currentTimeMillis().toInt()
+
+        // FLAG_UPDATE_CURRENT, not FLAG_ONE_SHOT. Intent.filterEquals() ignores extras, so a
+        // repeat notification for the same chat resolves to the cached PendingIntent - without
+        // UPDATE_CURRENT it would keep the older intent's extras. FLAG_ONE_SHOT was worse still:
+        // it cancelled the PendingIntent the first time it fired, so once any notification for a
+        // chat had been tapped, every other notification for that chat held a dead PendingIntent
+        // and tapping it did nothing at all.
         val pendingIntent = PendingIntent.getActivity(
-            this, requestCode, intent,
-            PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+            this, notificationId, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         val notification = NotificationCompat.Builder(this, channelId)
@@ -124,6 +151,6 @@ class MessagingFirebaseService : FirebaseMessagingService() {
             .setContentIntent(pendingIntent)
             .build()
 
-        notificationManager.notify(System.currentTimeMillis().toInt(), notification)
+        notificationManager.notify(notificationId, notification)
     }
 }
