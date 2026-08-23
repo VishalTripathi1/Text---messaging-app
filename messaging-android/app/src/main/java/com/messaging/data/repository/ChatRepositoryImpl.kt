@@ -29,11 +29,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -52,11 +54,43 @@ class ChatRepositoryImpl @Inject constructor(
 
     private val repositoryScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
+    /** Guards flushUnsentMessages() so overlapping reconnects cannot send the same row twice. */
+    private val isFlushingUnsent = AtomicBoolean(false)
+
+    /** Half-width of the window used to recognise an already-stored message - see flushUnsentMessages(). */
+    private val duplicateWindowMillis = 120_000L
+
     init {
         repositoryScope.launch {
             webSocketClient.incomingMessages.collect { wsMessage ->
                 handleIncomingWebSocketMessage(wsMessage)
             }
+        }
+
+        // Repair whatever failed while the server was unreachable, the moment it becomes reachable
+        // again.
+        //
+        // This is what removes the need to log in again. The backend sleeps on Render's free tier
+        // and takes most of a minute to boot, so the first sync after any idle period used to fail
+        // and simply be discarded - neither ChatListViewModel.syncChats() nor ChatListScreen's
+        // ON_RESUME looks at the Result. Nothing retried, so the chat list stayed stale and sends
+        // stayed stuck until a fresh login happened to rebuild everything from scratch.
+        //
+        // A successful WebSocket handshake is the one unambiguous signal that the server is awake
+        // and this device is authenticated, so it is the right trigger. Living in the repository
+        // rather than in a ViewModel means it fires no matter which screen is showing, and survives
+        // the screen that started the connection being disposed.
+        repositoryScope.launch {
+            webSocketClient.connectionStatus
+                // No distinctUntilChanged(): connectionStatus is a StateFlow, which already drops
+                // repeated equal values, so a false -> true -> false -> true sequence delivers
+                // exactly one true per genuine reconnect.
+                .filter { it }
+                .collect {
+                    Log.d("ChatRepositoryImpl", "WebSocket connected - resyncing and flushing unsent messages")
+                    syncChats()
+                    flushUnsentMessages()
+                }
         }
     }
 
@@ -97,17 +131,35 @@ class ChatRepositoryImpl @Inject constructor(
         }.flowOn(Dispatchers.IO)
     }
 
+    /**
+     * Refreshes the cached chat list from the server.
+     *
+     * Two behaviours here are load-bearing for the "app can't reach the server until I log in again"
+     * problem:
+     *
+     * 1. It now reports failure. Previously an unsuccessful response was coerced to an empty list
+     *    and still returned Result.success, so no caller could distinguish "you have no chats" from
+     *    "the request died against a sleeping server" - and therefore nothing ever retried.
+     *
+     * 2. It prunes. It used to only insert, so a chat deleted server-side lingered locally forever
+     *    as a ghost row reading "No messages yet".
+     *
+     * The prune is keyed strictly on the HTTP status, never on the mapped list being empty: a 500
+     * from the server would otherwise wipe the user's entire cached chat list. Private chats and
+     * groups are pruned from their own responses only, since a successful private-chat fetch says
+     * nothing about which groups still exist.
+     */
     override suspend fun syncChats(): Result<Unit> = withContext(Dispatchers.IO) {
         return@withContext try {
             val privateResponse = chatApiService.getUserChats(page = 0, size = 100)
             val groupsResponse = chatApiService.getUserGroups(page = 0, size = 100)
-            
+
             val privateEntities = if (privateResponse.isSuccessful && privateResponse.body() != null) {
                 privateResponse.body()!!.map { it.toEntity() }
             } else {
                 emptyList()
             }
-            
+
             val groupEntities = if (groupsResponse.isSuccessful && groupsResponse.body() != null) {
                 groupsResponse.body()!!.map { groupResp ->
                     val existing = chatDao.getChatById(-groupResp.id)
@@ -133,13 +185,39 @@ class ChatRepositoryImpl @Inject constructor(
             } else {
                 emptyList()
             }
-            
+
             val allEntities = privateEntities + groupEntities
             if (allEntities.isNotEmpty()) {
                 chatDao.insertChats(allEntities)
             }
-            Result.success(Unit)
+
+            if (privateResponse.isSuccessful) {
+                val serverPrivateIds = privateEntities.map { it.id }
+                if (serverPrivateIds.isEmpty()) {
+                    chatDao.deleteAllStalePrivateChats()
+                } else {
+                    chatDao.deleteStalePrivateChatsNotIn(serverPrivateIds)
+                }
+            }
+
+            if (groupsResponse.isSuccessful) {
+                val serverGroupIds = groupEntities.map { it.id }
+                if (serverGroupIds.isEmpty()) {
+                    chatDao.deleteAllStaleGroupChats()
+                } else {
+                    chatDao.deleteStaleGroupChatsNotIn(serverGroupIds)
+                }
+            }
+
+            if (!privateResponse.isSuccessful) {
+                Result.failure(Exception(parseErrorMessage(privateResponse, "Failed to sync chats")))
+            } else if (!groupsResponse.isSuccessful) {
+                Result.failure(Exception(parseErrorMessage(groupsResponse, "Failed to sync groups")))
+            } else {
+                Result.success(Unit)
+            }
         } catch (e: Exception) {
+            Log.e("ChatRepositoryImpl", "syncChats failed", e)
             Result.failure(e)
         }
     }
@@ -195,6 +273,10 @@ class ChatRepositoryImpl @Inject constructor(
         attachmentFileType: String?,
         attachmentFileSize: Long?
     ): Result<Unit> = withContext(Dispatchers.IO) {
+        // Declared outside the try so the catch below can reach it. It could not before, which is
+        // the whole reason a timed-out send sat on a PENDING clock icon forever: only the non-2xx
+        // branch marked the row FAILED, and a timeout throws rather than returning a response.
+        var tempMessageId: Long? = null
         return@withContext try {
             val isGroup = chatId != null && chatId < 0
             val actualGroupId = if (isGroup) -chatId!! else null
@@ -203,10 +285,11 @@ class ChatRepositoryImpl @Inject constructor(
 
             val currentUserId = tokenManager.userId.firstOrNull() ?: 0L
             val currentUsername = tokenManager.username.firstOrNull() ?: ""
-            val tempMessageId = -System.currentTimeMillis()
+            val newTempMessageId = -System.currentTimeMillis()
+            tempMessageId = newTempMessageId
 
             val tempEntity = MessageEntity(
-                id = tempMessageId,
+                id = newTempMessageId,
                 chatId = actualChatId,
                 groupId = actualGroupId,
                 senderId = currentUserId,
@@ -264,7 +347,7 @@ class ChatRepositoryImpl @Inject constructor(
             val httpResp = chatApiService.sendHttpMessage(wsRequest)
             if (httpResp.isSuccessful && httpResp.body() != null) {
                 val messageResp = httpResp.body()!!
-                messageDao.deleteMessageById(tempMessageId)
+                messageDao.deleteMessageById(newTempMessageId)
                 messageDao.insertMessage(messageResp.toEntity(messageResp.deliveryStatus ?: "SENT"))
 
                 val confirmedChatId = if (actualGroupId != null) -actualGroupId else actualChatId
@@ -281,12 +364,196 @@ class ChatRepositoryImpl @Inject constructor(
                 }
                 Result.success(Unit)
             } else {
-                messageDao.updateDeliveryStatus(tempMessageId, "FAILED")
+                markSendFailed(newTempMessageId)
                 Result.failure(Exception(parseErrorMessage(httpResp, "Failed to send message")))
             }
         } catch (e: Exception) {
+            // A timeout, a dropped connection or a malformed body all land here. Before, the temp
+            // row was simply abandoned on PENDING, so the message showed a clock icon that never
+            // resolved and there was nothing to tell flushUnsentMessages() to retry it.
+            Log.e("ChatRepositoryImpl", "sendMessage failed for chatId=$chatId", e)
+            tempMessageId?.let { markSendFailed(it) }
             Result.failure(e)
         }
+    }
+
+    /**
+     * Marks a locally-created message as failed, on the message row and on the chat-list preview.
+     *
+     * The preview has to be updated separately because the chats table caches its own copy of the
+     * last message's status; leaving it on PENDING would keep a clock icon on the chat list even
+     * once the conversation itself showed the send as failed.
+     */
+    private fun markSendFailed(tempMessageId: Long) {
+        messageDao.updateDeliveryStatus(tempMessageId, "FAILED")
+
+        val message = messageDao.getMessageById(tempMessageId) ?: return
+        val resolvedChatId = message.groupId?.let { -it } ?: message.chatId ?: return
+        chatDao.updateLastMessageStatus(
+            chatId = resolvedChatId,
+            senderId = message.senderId,
+            text = message.messageText,
+            status = "FAILED"
+        )
+    }
+
+    /**
+     * Re-sends locally-created messages that never reached the server. Called from init the moment
+     * the WebSocket connects, which is the first reliable proof the backend is awake again.
+     *
+     * Without this, a message typed while the server was still booting stayed on the device forever:
+     * the send threw, the row kept its negative local id, and nothing ever tried again short of the
+     * user noticing and retyping it.
+     *
+     * Duplicate risk, stated plainly: if the original POST did reach the server and only the
+     * response was lost, resending stores the message twice. The endpoint has no idempotency key -
+     * adding one needs a client-generated id column and a unique index on the backend - so this is
+     * mitigated, not eliminated. Every affected conversation is re-synced first, and a row is
+     * skipped when the server already holds a message from the same sender with the same text
+     * within [duplicateWindowMillis] of it. The window is wide because the two timestamps come from
+     * different clocks: the device's for the local row, the server's for the synced one.
+     */
+    private suspend fun flushUnsentMessages(): Unit = withContext(Dispatchers.IO) {
+        // Two reconnects in quick succession would otherwise both read the same rows and send each
+        // of them twice.
+        if (!isFlushingUnsent.compareAndSet(false, true)) {
+            Log.d("ChatRepositoryImpl", "flushUnsentMessages already in progress - skipping")
+            return@withContext
+        }
+
+        try {
+            val unsent = messageDao.getUnsentMessages()
+            if (unsent.isEmpty()) return@withContext
+
+            Log.i("ChatRepositoryImpl", "Flushing ${unsent.size} unsent message(s)")
+
+            // Pull the server's copy of every affected conversation first, so the duplicate check
+            // below has something to compare against.
+            unsent
+                .mapNotNull { row -> row.groupId?.let { -it } ?: row.chatId }
+                .distinct()
+                .forEach { syncMessages(it) }
+
+            for (row in unsent) {
+                if (row.chatId == null && row.groupId == null) {
+                    // Nothing identifies the destination, so this row can never be sent and is not
+                    // displayed in any conversation either. Drop it rather than retry it on every
+                    // reconnect for the life of the install.
+                    Log.w(
+                        "ChatRepositoryImpl",
+                        "Discarding unsent message ${row.id}: no chatId or groupId"
+                    )
+                    messageDao.deleteMessageById(row.id)
+                    continue
+                }
+
+                val alreadyStored = row.messageText
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { text ->
+                        messageDao.findServerMessageMatching(
+                            chatId = row.chatId,
+                            groupId = row.groupId,
+                            senderId = row.senderId,
+                            text = text,
+                            fromMillis = row.createdAt - duplicateWindowMillis,
+                            toMillis = row.createdAt + duplicateWindowMillis
+                        )
+                    }
+
+                if (alreadyStored != null) {
+                    Log.i(
+                        "ChatRepositoryImpl",
+                        "Unsent message ${row.id} is already on the server as ${alreadyStored.id} - dropping the local copy"
+                    )
+                    messageDao.deleteMessageById(row.id)
+                    refreshChatPreview(alreadyStored)
+                    continue
+                }
+
+                resendUnsentMessage(row)
+            }
+        } catch (e: Exception) {
+            Log.e("ChatRepositoryImpl", "flushUnsentMessages failed", e)
+        } finally {
+            isFlushingUnsent.set(false)
+        }
+    }
+
+    /**
+     * One retry attempt for a single unsent row. A row is retried at most once per reconnect and
+     * left FAILED - visible as a failed send rather than an endless clock - if the retry also fails.
+     */
+    private suspend fun resendUnsentMessage(row: MessageEntity) {
+        // Back to PENDING so the row shows as in-flight while the retry runs.
+        messageDao.updateDeliveryStatus(row.id, "PENDING")
+
+        val request = MessageRequest(
+            chatId = row.chatId,
+            groupId = row.groupId,
+            // Deliberately null: the backend only falls back to recipientId when neither chatId nor
+            // groupId is present, and the check above guarantees one of them is.
+            recipientId = null,
+            messageType = row.messageType,
+            messageText = row.messageText,
+            // Already a server-side path - uploadAttachment() runs before sendMessage(), so a row
+            // that exists at all has had its file uploaded successfully.
+            attachmentPath = row.attachmentPath,
+            attachmentFileName = row.attachmentFileName,
+            attachmentFileType = row.attachmentFileType,
+            attachmentFileSize = row.attachmentFileSize
+        )
+
+        try {
+            val response = chatApiService.sendHttpMessage(request)
+            if (response.isSuccessful && response.body() != null) {
+                val messageResp = response.body()!!
+                val stored = messageResp.toEntity(messageResp.deliveryStatus ?: "SENT")
+                messageDao.deleteMessageById(row.id)
+                messageDao.insertMessage(stored)
+                refreshChatPreview(stored)
+                Log.i("ChatRepositoryImpl", "Resent message ${row.id} as ${messageResp.id}")
+            } else {
+                Log.w(
+                    "ChatRepositoryImpl",
+                    "Resend of ${row.id} rejected: ${parseErrorMessage(response, "Failed to send message")}"
+                )
+                markSendFailed(row.id)
+            }
+        } catch (e: Exception) {
+            Log.e("ChatRepositoryImpl", "Resend of ${row.id} failed", e)
+            markSendFailed(row.id)
+        }
+    }
+
+    /**
+     * Points a chat's cached last-message preview at [message], but only when [message] really is
+     * the newest one - resending an older queued message must not push a stale line to the top of
+     * the chat list.
+     */
+    private fun refreshChatPreview(message: MessageEntity) {
+        val resolvedChatId = message.groupId?.let { -it } ?: message.chatId ?: return
+        val chat = chatDao.getChatById(resolvedChatId) ?: return
+        if ((chat.lastMessageAt ?: 0L) > message.createdAt) return
+
+        val previewText = if (message.messageText.isNullOrBlank() && message.attachmentPath != null) {
+            when (message.messageType) {
+                "IMAGE" -> "📷 Photo"
+                "VIDEO" -> "🎥 Video"
+                "VOICE" -> "🎤 Voice message"
+                else -> "📎 Document"
+            }
+        } else {
+            message.messageText
+        }
+
+        chatDao.insertChat(
+            chat.copy(
+                lastMessageText = previewText,
+                lastMessageSenderId = message.senderId,
+                lastMessageStatus = message.deliveryStatus,
+                lastMessageAt = message.createdAt
+            )
+        )
     }
 
     override suspend fun markChatAsRead(chatId: Long): Result<Unit> = withContext(Dispatchers.IO) {

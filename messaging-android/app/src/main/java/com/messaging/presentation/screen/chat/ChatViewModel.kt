@@ -161,6 +161,28 @@ class ChatViewModel @Inject constructor(
                 }
         }
 
+        // Refill the open conversation as soon as the connection comes back.
+        //
+        // ChatRepositoryImpl re-syncs the chat *list* on reconnect, but the messages of whichever
+        // conversation is on screen are fetched by chat id and are not covered by that. Without
+        // this, a chat opened while the backend was still booting stayed empty (or missing the
+        // newest messages) until the user backed out and came in again - the in-conversation half of
+        // the same "I have to log in again" symptom.
+        //
+        // drop(1) discards the current value on subscription so this only reacts to genuine
+        // transitions: init already calls syncMessages() once, and re-running it for whatever state
+        // the socket happened to be in when the screen opened would just duplicate that request.
+        viewModelScope.launch {
+            chatRepository.observeWebSocketConnection()
+                .distinctUntilChanged()
+                .drop(1)
+                .filter { it }
+                .collect {
+                    Log.d("ChatViewModel", "WebSocket reconnected - resyncing messages for chat $chatId")
+                    chatRepository.syncMessages(chatId)
+                }
+        }
+
         // Keep the header's online/offline status live. Previously _otherUserStatus was only
         // ever set once (the snapshot read above), so a USER_STATUS update arriving over the
         // WebSocket while this chat screen was already open wouldn't be reflected until the

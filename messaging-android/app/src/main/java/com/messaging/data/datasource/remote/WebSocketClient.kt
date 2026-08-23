@@ -73,8 +73,30 @@ class WebSocketClient(
     @Volatile
     private var reconnectScheduled = false
 
-    fun connect() {
+    /**
+     * Incremented on every connect attempt. Each listener captures the value current when it was
+     * created and ignores its own callbacks once a newer attempt has superseded it.
+     *
+     * Without this, the close of the previous socket below raced the opening of the new one: the old
+     * socket's onClosed would fire after the new socket's onOpen, clear _connectionStatus and
+     * isConnecting even though the new socket was perfectly healthy, and schedule a reconnect that
+     * closed it again - an endless connect/close flap where the app reports itself offline while
+     * holding a working connection.
+     */
+    private val connectionGeneration = java.util.concurrent.atomic.AtomicLong(0)
+
+    /**
+     * @param isRetry true when called from the automatic backoff, false for an explicit connect
+     *   (app launch, screen resume, login). An explicit connect resets the backoff, so a user
+     *   returning to the app is not made to wait out a 30-second delay inherited from failures that
+     *   happened while it was in the background.
+     */
+    fun connect(isRetry: Boolean = false) {
         isClosedIntentionally = false
+
+        if (!isRetry) {
+            reconnectDelay = 2000L
+        }
 
         scope.launch {
 
@@ -87,184 +109,221 @@ class WebSocketClient(
 
             isConnecting = true
 
-            val token = tokenManager.accessToken.firstOrNull()
+            // Everything below runs under try/catch so isConnecting cannot be left stranded at
+            // true. If it ever were - a DataStore read throwing, newWebSocket() refusing the
+            // request - the guard above would reject every future connect attempt for the rest of
+            // the process's life, disabling reconnection entirely with no way back except killing
+            // the app.
+            try {
 
-            if (token.isNullOrBlank()) {
+                val token = tokenManager.accessToken.firstOrNull()
+
+                if (token.isNullOrBlank()) {
+                    Log.e(
+                        "WebSocketClient",
+                        "Cannot connect to WebSockets: Access token is missing"
+                    )
+
+                    isConnecting = false
+                    return@launch
+                }
+
+                val url =
+                    "${Constants.WS_BASE_URL}?token=$token"
+
+                Log.d(
+                    "WebSocketClient",
+                    "Connecting to WebSocket"
+                )
+
+                val request =
+                    Request.Builder()
+                        .url(url)
+                        .build()
+
+                val generation = connectionGeneration.incrementAndGet()
+
+                webSocket?.close(
+                    1000,
+                    "Replacing stale connection"
+                )
+
+                webSocket =
+                    okHttpClient.newWebSocket(
+                        request,
+                        object : WebSocketListener() {
+
+                            /** False once a newer connect attempt has replaced this listener. */
+                            private fun isCurrent(): Boolean =
+                                connectionGeneration.get() == generation
+
+                            override fun onOpen(
+                                webSocket: WebSocket,
+                                response: Response
+                            ) {
+                                if (!isCurrent()) {
+                                    webSocket.close(1000, "Superseded before open")
+                                    return
+                                }
+
+                                Log.i(
+                                    "WebSocketClient",
+                                    "WebSocket connection opened successfully"
+                                )
+
+                                _connectionStatus.value = true
+                                isConnecting = false
+                                reconnectDelay = 2000L
+                                reconnectScheduled = false
+                            }
+
+                            override fun onMessage(
+                                webSocket: WebSocket,
+                                text: String
+                            ) {
+                                if (!isCurrent()) return
+
+                                Log.d(
+                                    "WebSocketClient",
+                                    "WebSocket message received: $text"
+                                )
+
+                                try {
+                                    val message =
+                                        gson.fromJson(
+                                            text,
+                                            WebSocketMessage::class.java
+                                        )
+
+                                    scope.launch {
+                                        _incomingMessages.emit(message)
+                                    }
+
+                                } catch (e: Exception) {
+                                    Log.e(
+                                        "WebSocketClient",
+                                        "Error parsing WebSocket message",
+                                        e
+                                    )
+                                }
+                            }
+
+                            override fun onClosing(
+                                webSocket: WebSocket,
+                                code: Int,
+                                reason: String
+                            ) {
+                                Log.i(
+                                    "WebSocketClient",
+                                    "WebSocket closing: $code / $reason"
+                                )
+
+                                webSocket.close(
+                                    1000,
+                                    null
+                                )
+                            }
+
+                            override fun onClosed(
+                                webSocket: WebSocket,
+                                code: Int,
+                                reason: String
+                            ) {
+                                Log.i(
+                                    "WebSocketClient",
+                                    "WebSocket closed: $code / $reason (current=${isCurrent()})"
+                                )
+
+                                if (!isCurrent()) return
+
+                                _connectionStatus.value = false
+                                isConnecting = false
+
+                                triggerReconnect()
+                            }
+
+                            override fun onFailure(
+                                webSocket: WebSocket,
+                                t: Throwable,
+                                response: Response?
+                            ) {
+                                val responseCode =
+                                    response?.code
+
+                                Log.e(
+                                    "WebSocketClient",
+                                    "WebSocket failure. HTTP code: $responseCode (current=${isCurrent()})",
+                                    t
+                                )
+
+                                if (!isCurrent()) return
+
+                                _connectionStatus.value = false
+                                isConnecting = false
+
+                                /*
+                                 * WebSocket authentication is separate from normal
+                                 * Retrofit requests. If the handshake failed because
+                                 * the access token expired, refresh it and reconnect
+                                 * using the new token.
+                                 */
+                                if (responseCode == 401) {
+                                    scope.launch {
+
+                                        if (isClosedIntentionally) {
+                                            return@launch
+                                        }
+
+                                        Log.i(
+                                            "WebSocketClient",
+                                            "WebSocket received 401. Refreshing access token..."
+                                        )
+
+                                        val refreshedToken =
+                                            tokenRefreshManager
+                                                .refreshForAccessToken(token)
+
+                                        if (
+                                            !refreshedToken.isNullOrBlank()
+                                        ) {
+                                            Log.i(
+                                                "WebSocketClient",
+                                                "Token refreshed. Reconnecting WebSocket..."
+                                            )
+
+                                            reconnectDelay = 2000L
+                                            reconnectScheduled = false
+
+                                            connect()
+                                        } else {
+                                            Log.e(
+                                                "WebSocketClient",
+                                                "Unable to refresh token for WebSocket"
+                                            )
+
+                                            triggerReconnect()
+                                        }
+                                    }
+
+                                } else {
+                                    triggerReconnect()
+                                }
+                            }
+                        }
+                    )
+
+            } catch (t: Throwable) {
                 Log.e(
                     "WebSocketClient",
-                    "Cannot connect to WebSockets: Access token is missing"
+                    "WebSocket connect attempt threw before the socket was established",
+                    t
                 )
 
                 isConnecting = false
-                return@launch
+                _connectionStatus.value = false
+
+                triggerReconnect()
             }
-
-            val url =
-                "${Constants.WS_BASE_URL}?token=$token"
-
-            Log.d(
-                "WebSocketClient",
-                "Connecting to WebSocket"
-            )
-
-            val request =
-                Request.Builder()
-                    .url(url)
-                    .build()
-
-            webSocket?.close(
-                1000,
-                "Replacing stale connection"
-            )
-
-            webSocket =
-                okHttpClient.newWebSocket(
-                    request,
-                    object : WebSocketListener() {
-
-                        override fun onOpen(
-                            webSocket: WebSocket,
-                            response: Response
-                        ) {
-                            Log.i(
-                                "WebSocketClient",
-                                "WebSocket connection opened successfully"
-                            )
-
-                            _connectionStatus.value = true
-                            isConnecting = false
-                            reconnectDelay = 2000L
-                            reconnectScheduled = false
-                        }
-
-                        override fun onMessage(
-                            webSocket: WebSocket,
-                            text: String
-                        ) {
-                            Log.d(
-                                "WebSocketClient",
-                                "WebSocket message received: $text"
-                            )
-
-                            try {
-                                val message =
-                                    gson.fromJson(
-                                        text,
-                                        WebSocketMessage::class.java
-                                    )
-
-                                scope.launch {
-                                    _incomingMessages.emit(message)
-                                }
-
-                            } catch (e: Exception) {
-                                Log.e(
-                                    "WebSocketClient",
-                                    "Error parsing WebSocket message",
-                                    e
-                                )
-                            }
-                        }
-
-                        override fun onClosing(
-                            webSocket: WebSocket,
-                            code: Int,
-                            reason: String
-                        ) {
-                            Log.i(
-                                "WebSocketClient",
-                                "WebSocket closing: $code / $reason"
-                            )
-
-                            webSocket.close(
-                                1000,
-                                null
-                            )
-                        }
-
-                        override fun onClosed(
-                            webSocket: WebSocket,
-                            code: Int,
-                            reason: String
-                        ) {
-                            Log.i(
-                                "WebSocketClient",
-                                "WebSocket closed: $code / $reason"
-                            )
-
-                            _connectionStatus.value = false
-                            isConnecting = false
-
-                            triggerReconnect()
-                        }
-
-                        override fun onFailure(
-                            webSocket: WebSocket,
-                            t: Throwable,
-                            response: Response?
-                        ) {
-                            val responseCode =
-                                response?.code
-
-                            Log.e(
-                                "WebSocketClient",
-                                "WebSocket failure. HTTP code: $responseCode",
-                                t
-                            )
-
-                            _connectionStatus.value = false
-                            isConnecting = false
-
-                            /*
-                             * WebSocket authentication is separate from normal
-                             * Retrofit requests. If the handshake failed because
-                             * the access token expired, refresh it and reconnect
-                             * using the new token.
-                             */
-                            if (responseCode == 401) {
-                                scope.launch {
-
-                                    if (isClosedIntentionally) {
-                                        return@launch
-                                    }
-
-                                    Log.i(
-                                        "WebSocketClient",
-                                        "WebSocket received 401. Refreshing access token..."
-                                    )
-
-                                    val refreshedToken =
-                                        tokenRefreshManager
-                                            .refreshForAccessToken(token)
-
-                                    if (
-                                        !refreshedToken.isNullOrBlank()
-                                    ) {
-                                        Log.i(
-                                            "WebSocketClient",
-                                            "Token refreshed. Reconnecting WebSocket..."
-                                        )
-
-                                        reconnectDelay = 2000L
-                                        reconnectScheduled = false
-
-                                        connect()
-                                    } else {
-                                        Log.e(
-                                            "WebSocketClient",
-                                            "Unable to refresh token for WebSocket"
-                                        )
-
-                                        triggerReconnect()
-                                    }
-                                }
-
-                            } else {
-                                triggerReconnect()
-                            }
-                        }
-                    }
-                )
         }
     }
 
@@ -303,7 +362,7 @@ class WebSocketClient(
                 "Attempting WebSocket reconnection..."
             )
 
-            connect()
+            connect(isRetry = true)
         }
     }
 
@@ -352,6 +411,10 @@ class WebSocketClient(
         isClosedIntentionally = true
         reconnectScheduled = false
         isConnecting = false
+
+        // Retire the current listener so the close below cannot report itself as a dropped
+        // connection and schedule a reconnect we explicitly do not want.
+        connectionGeneration.incrementAndGet()
 
         webSocket?.close(
             1000,

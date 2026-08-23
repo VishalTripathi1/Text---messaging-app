@@ -48,6 +48,30 @@ object NetworkModule {
     private val BASE_URL =
         Constants.BASE_URL
 
+    /**
+     * Timeouts sized for a cold backend rather than a warm one.
+     *
+     * The backend runs on Render's free tier, which stops the instance after roughly 15 minutes of
+     * inactivity, and the container is deliberately memory-starved (-Xmx192m, CICompilerCount=2)
+     * so it fits in 512 MB - which trades startup time for memory. A cold boot can take most of a
+     * minute. Every timeout here used to be 15 seconds, so the first request after any idle period
+     * was guaranteed to fail, which is what made the app look permanently disconnected until the
+     * user logged in again.
+     *
+     * connect stays short because the TCP/TLS handshake terminates at Render's edge and completes
+     * immediately whether or not the instance behind it is awake; the waiting is done on the
+     * response, which is a read timeout. callTimeout is the backstop so that a request can never
+     * hang indefinitely if a socket is left half-open.
+     */
+    private fun OkHttpClient.Builder.applyColdStartTimeouts(): OkHttpClient.Builder {
+        return this
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(90, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .callTimeout(120, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+    }
+
     @Singleton
     @Provides
     fun provideTokenManager(
@@ -99,18 +123,7 @@ object NetworkModule {
 
         return OkHttpClient.Builder()
             .addInterceptor(loggingInterceptor)
-            .connectTimeout(
-                15,
-                TimeUnit.SECONDS
-            )
-            .readTimeout(
-                15,
-                TimeUnit.SECONDS
-            )
-            .writeTimeout(
-                15,
-                TimeUnit.SECONDS
-            )
+            .applyColdStartTimeouts()
             .build()
     }
 
@@ -161,18 +174,7 @@ object NetworkModule {
             .addInterceptor(authInterceptor)
             .addInterceptor(loggingInterceptor)
             .authenticator(tokenAuthenticator)
-            .connectTimeout(
-                15,
-                TimeUnit.SECONDS
-            )
-            .readTimeout(
-                15,
-                TimeUnit.SECONDS
-            )
-            .writeTimeout(
-                15,
-                TimeUnit.SECONDS
-            )
+            .applyColdStartTimeouts()
             .build()
     }
 
@@ -222,8 +224,25 @@ object NetworkModule {
         tokenRefreshManager: TokenRefreshManager
     ): WebSocketClient {
 
+        // A WebSocket needs its own client purely for pingInterval, which OkHttp only honours per
+        // client. Without it a socket dropped by the mobile network or a NAT timeout stays open as
+        // far as the app is concerned - no onFailure, no onClosed - so the reconnect logic never
+        // runs and the connection is silently dead until the next send fails. 30s pings surface
+        // that within one interval. newBuilder() reuses the connection pool and dispatcher of the
+        // main client, so this is not a second connection stack.
+        //
+        // callTimeout MUST be cleared here. It bounds an entire call, and a WebSocket call is meant
+        // to live for as long as the conversation does - inheriting the 120s ceiling from the HTTP
+        // client would tear down a perfectly healthy socket every two minutes. Liveness is pings'
+        // job, not a deadline's. (OkHttp already zeroes the socket read timeout itself once the
+        // handshake upgrades, so readTimeout above does not affect frame reads.)
+        val webSocketOkHttpClient = okHttpClient.newBuilder()
+            .pingInterval(30, TimeUnit.SECONDS)
+            .callTimeout(0, TimeUnit.MILLISECONDS)
+            .build()
+
         return WebSocketClient(
-            okHttpClient = okHttpClient,
+            okHttpClient = webSocketOkHttpClient,
             tokenManager = tokenManager,
             gson = gson,
             tokenRefreshManager = tokenRefreshManager

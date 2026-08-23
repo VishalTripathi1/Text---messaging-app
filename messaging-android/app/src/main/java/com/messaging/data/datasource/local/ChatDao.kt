@@ -57,6 +57,52 @@ interface ChatDao {
     fun deleteAllChats()
 
     /**
+     * Removes cached chats the server no longer lists, so a chat deleted server-side stops showing
+     * up locally. syncChats() only ever inserted, which is why chats belonging to deleted accounts
+     * lingered as ghost rows reading "No messages yet" forever.
+     *
+     * Private chats and groups are pruned separately because each comes from its own endpoint - a
+     * successful private-chat fetch says nothing about which groups exist, so pruning both from one
+     * response would delete the other kind wholesale. Groups are stored under negated ids (see
+     * ChatMapper), hence the isGroup discriminator rather than a sign test.
+     *
+     * There are two methods per kind because Room generates invalid SQL for an empty IN () list;
+     * the caller picks the wholesale delete when the server returned nothing. Callers must key the
+     * decision on HTTP success, never on the list being empty, or a failed request wipes the cache.
+     *
+     * Both variants spare any chat that holds local messages, for two reasons. The server hides
+     * message-less chats from /chats (see ChatRepository.findUserChatsExcludingArchived), so a chat
+     * the user has only just opened is legitimately absent from the response and must not be
+     * deleted out from under them; and a conversation with history should never lose that history
+     * because a list endpoint stopped mentioning it. The consequence is that a server-side deleted
+     * chat that does have local messages survives locally - deliberately, since dropping real
+     * message history on the strength of one list response is the worse failure.
+     */
+    @Query(
+        "DELETE FROM chats WHERE isGroup = 0 AND id NOT IN (:serverChatIds) " +
+        "AND id NOT IN (SELECT DISTINCT chatId FROM messages WHERE chatId IS NOT NULL)"
+    )
+    fun deleteStalePrivateChatsNotIn(serverChatIds: List<Long>)
+
+    @Query(
+        "DELETE FROM chats WHERE isGroup = 0 " +
+        "AND id NOT IN (SELECT DISTINCT chatId FROM messages WHERE chatId IS NOT NULL)"
+    )
+    fun deleteAllStalePrivateChats()
+
+    @Query(
+        "DELETE FROM chats WHERE isGroup = 1 AND id NOT IN (:serverChatIds) " +
+        "AND id NOT IN (SELECT DISTINCT -groupId FROM messages WHERE groupId IS NOT NULL)"
+    )
+    fun deleteStaleGroupChatsNotIn(serverChatIds: List<Long>)
+
+    @Query(
+        "DELETE FROM chats WHERE isGroup = 1 " +
+        "AND id NOT IN (SELECT DISTINCT -groupId FROM messages WHERE groupId IS NOT NULL)"
+    )
+    fun deleteAllStaleGroupChats()
+
+    /**
      * Updates the cached online/offline status for whichever chat row has this user as the
      * other participant. The backend already broadcasts USER_STATUS over the WebSocket on every
      * connect/disconnect, but nothing on the client ever handled that message type - so status

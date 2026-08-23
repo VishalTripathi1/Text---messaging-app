@@ -50,10 +50,19 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE groupId = :groupId ORDER BY createdAt DESC LIMIT 1")
     fun getLatestMessageForGroup(groupId: Long): MessageEntity?
 
-    @Query("DELETE FROM messages WHERE chatId = :chatId AND id < 0")
+    /**
+     * Clears the optimistic local twin of a message once the server's own copy arrives.
+     *
+     * Restricted to PENDING rows on purpose. It used to delete every negative id in the chat, which
+     * meant a message whose send had failed was silently destroyed the moment any *later* message in
+     * the same conversation succeeded - the row queued for retry vanished and that message was lost
+     * with no trace. FAILED rows now survive until flushUnsentMessages() either resends them or
+     * recognises them as already stored.
+     */
+    @Query("DELETE FROM messages WHERE chatId = :chatId AND id < 0 AND deliveryStatus = 'PENDING'")
     fun deletePendingMessagesForChat(chatId: Long)
 
-    @Query("DELETE FROM messages WHERE groupId = :groupId AND id < 0")
+    @Query("DELETE FROM messages WHERE groupId = :groupId AND id < 0 AND deliveryStatus = 'PENDING'")
     fun deletePendingMessagesForGroup(groupId: Long)
 
     @Query("SELECT * FROM messages WHERE chatId = :chatId AND id < 0 ORDER BY createdAt ASC LIMIT 1")
@@ -64,4 +73,35 @@ interface MessageDao {
 
     @Query("DELETE FROM messages")
     fun deleteAllMessages()
+
+    /**
+     * Locally-created messages that never made it to the server, oldest first.
+     *
+     * A negative id means the row was created by sendMessage() and has no server id yet, so these
+     * are exactly the sends that failed or timed out. Used to flush them once the connection comes
+     * back - see ChatRepositoryImpl.flushUnsentMessages().
+     */
+    @Query(
+        "SELECT * FROM messages WHERE id < 0 AND deliveryStatus IN ('PENDING', 'FAILED') " +
+            "ORDER BY createdAt ASC"
+    )
+    fun getUnsentMessages(): List<MessageEntity>
+
+    /**
+     * Server-side messages in a chat sent by :senderId within a time window, used to decide whether
+     * an unsent local row is actually a duplicate before resending it. See flushUnsentMessages().
+     */
+    @Query(
+        "SELECT * FROM messages WHERE id > 0 AND senderId = :senderId AND messageText = :text " +
+            "AND ((:chatId IS NOT NULL AND chatId = :chatId) OR (:groupId IS NOT NULL AND groupId = :groupId)) " +
+            "AND createdAt BETWEEN :fromMillis AND :toMillis LIMIT 1"
+    )
+    fun findServerMessageMatching(
+        chatId: Long?,
+        groupId: Long?,
+        senderId: Long,
+        text: String,
+        fromMillis: Long,
+        toMillis: Long
+    ): MessageEntity?
 }
