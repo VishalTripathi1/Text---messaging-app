@@ -88,24 +88,22 @@ public class MessageServiceImpl implements MessageService {
         // driver. Since mapToChatResponse now also does the real work of resolving per-user
         // pin/archive state, this method genuinely needs write access.
         Pageable pageable = PageRequest.of(page, size);
-        return chatRepository.findUserChatsExcludingArchived(userId, pageable)
-                .getContent()
-                .stream()
-                .map(chat -> mapToChatResponse(chat, userId))
-                .collect(Collectors.toList());
+        return mapToChatResponses(
+                chatRepository.findUserChatsExcludingArchived(userId, pageable).getContent(), userId);
     }
 
     @Override
-    @Transactional(readOnly = true)
+    @Transactional
     public List<ChatResponse> getArchivedChats(Long userId, int page, int size) {
         // Archiving a chat previously made it vanish permanently - there was no endpoint to list
         // archived chats at all, so there was no way to ever find or unarchive one again.
+        //
+        // Not readOnly, for the same reason getUserChats isn't: mapToChatResponses can save() a chat
+        // to backfill a missing lastMessageId, and a write in a read-only transaction either silently
+        // does nothing or throws, depending on the driver.
         Pageable pageable = PageRequest.of(page, size);
-        return chatRepository.findArchivedUserChats(userId, pageable)
-                .getContent()
-                .stream()
-                .map(chat -> mapToChatResponse(chat, userId))
-                .collect(Collectors.toList());
+        return mapToChatResponses(
+                chatRepository.findArchivedUserChats(userId, pageable).getContent(), userId);
     }
 
     @Override
@@ -251,11 +249,9 @@ public class MessageServiceImpl implements MessageService {
             throw new BadRequestException("You are not a participant of this chat");
         }
         Pageable pageable = PageRequest.of(page, size);
-        return messageRepository.findChatMessages(chatId, pageable)
-                .getContent()
-                .stream()
-                .map(this::mapToMessageResponse)
-                .collect(Collectors.toList());
+        // mapToMessageResponses, not one mapToMessageResponse per row: the per-message version ran
+        // about five queries each, which is why a long history took seconds to come back.
+        return mapToMessageResponses(messageRepository.findChatMessages(chatId, pageable).getContent());
     }
 
     @Override
@@ -265,11 +261,7 @@ public class MessageServiceImpl implements MessageService {
             throw new BadRequestException("You are not a member of this group");
         }
         Pageable pageable = PageRequest.of(page, size);
-        return messageRepository.findGroupMessages(groupId, pageable)
-                .getContent()
-                .stream()
-                .map(this::mapToMessageResponse)
-                .collect(Collectors.toList());
+        return mapToMessageResponses(messageRepository.findGroupMessages(groupId, pageable).getContent());
     }
 
     @Override
@@ -309,154 +301,338 @@ public class MessageServiceImpl implements MessageService {
     }
 
     private ChatResponse mapToChatResponse(Chat chat, Long currentUserId) {
-        User otherUser = chat.getUser1().getId().equals(currentUserId) ? chat.getUser2() : chat.getUser1();
-        UserResponse otherUserDto = mapToUserResponse(otherUser);
+        return mapToChatResponses(List.of(chat), currentUserId).get(0);
+    }
 
-        MessageResponse lastMessageDto = null;
-        if (chat.getLastMessageId() != null) {
-            lastMessageDto = messageRepository.findById(chat.getLastMessageId())
-                    .map(this::mapToMessageResponse)
-                    .orElse(null);
+    /**
+     * Maps the chat list with a fixed number of queries instead of roughly nine per chat.
+     *
+     * <p>Opening the app was slow for the same reason opening a conversation was: each chat looked up
+     * the other participant's profile, then its last message, then that message's attachment,
+     * reactions, read receipt, delivery status and the recipient's read-receipt setting, then its own
+     * unread count and pin/archive row. Twenty chats came to something like 180 sequential round trips
+     * to a remote database before the first row could be drawn.
+     *
+     * <p>All of it is now fetched per page: the profiles together, the last messages together (and
+     * mapped by {@link #mapToMessageResponses}, which batches internally), the unread counts as one
+     * grouped query, the preferences as one more.
+     */
+    private List<ChatResponse> mapToChatResponses(List<Chat> chats, Long currentUserId) {
+        if (chats == null || chats.isEmpty()) {
+            return new java.util.ArrayList<>();
         }
 
-        if (lastMessageDto == null) {
-            List<Message> latestMessages = messageRepository.findChatMessages(chat.getId(), PageRequest.of(0, 1)).getContent();
-            if (!latestMessages.isEmpty()) {
-                Message latestMsg = latestMessages.get(0);
-                lastMessageDto = mapToMessageResponse(latestMsg);
+        List<Long> chatIds = chats.stream().map(Chat::getId).collect(Collectors.toList());
+
+        // Which participant is "the other one", read straight off the chats' foreign-key columns:
+        // chat.getUser1().getId() would initialise two lazy proxies per chat instead.
+        Map<Long, Long> otherUserIdByChatId = new java.util.HashMap<>();
+        for (Object[] row : chatRepository.findParticipantIdRowsByChatIds(chatIds)) {
+            Long user1Id = (Long) row[1];
+            Long user2Id = (Long) row[2];
+            otherUserIdByChatId.put((Long) row[0], currentUserId.equals(user1Id) ? user2Id : user1Id);
+        }
+
+        Map<Long, User> userById = userRepository
+                .findAllById(new java.util.HashSet<>(otherUserIdByChatId.values()))
+                .stream()
+                .collect(Collectors.toMap(User::getId, u -> u));
+
+        Map<Long, User> otherUserByChatId = new java.util.HashMap<>();
+        for (Chat chat : chats) {
+            Long otherUserId = otherUserIdByChatId.get(chat.getId());
+            User otherUser = otherUserId != null ? userById.get(otherUserId) : null;
+            if (otherUser == null) {
+                // Nothing should be able to get here - the ids came from these very rows - but a chat
+                // whose participant went missing is not worth failing the whole list over.
+                otherUser = chat.getUser1().getId().equals(currentUserId) ? chat.getUser2() : chat.getUser1();
+            }
+            otherUserByChatId.put(chat.getId(), otherUser);
+        }
+
+        java.util.Set<Long> otherUserIds = otherUserByChatId.values().stream()
+                .map(User::getId)
+                .collect(Collectors.toSet());
+        Map<Long, UserProfile> profileByUserId = new java.util.HashMap<>();
+        for (Object[] row : userProfileRepository.findProfileRowsByUserIds(otherUserIds)) {
+            profileByUserId.put((Long) row[0], (UserProfile) row[1]);
+        }
+
+        // Last messages: one findAllById for every chat that already knows its lastMessageId, then a
+        // single-row lookup only for the chats that don't. That backfill path stays per-chat because
+        // it also writes the id back, and it runs at most once per chat ever.
+        List<Long> knownLastMessageIds = chats.stream()
+                .map(Chat::getLastMessageId)
+                .filter(java.util.Objects::nonNull)
+                .collect(Collectors.toList());
+
+        List<Message> lastMessages = knownLastMessageIds.isEmpty()
+                ? new java.util.ArrayList<>()
+                : new java.util.ArrayList<>(messageRepository.findAllById(knownLastMessageIds));
+
+        for (Chat chat : chats) {
+            boolean resolved = chat.getLastMessageId() != null
+                    && lastMessages.stream().anyMatch(m -> m.getId().equals(chat.getLastMessageId()));
+            if (resolved) {
+                continue;
+            }
+            // Either the chat never recorded a lastMessageId, or it points at a row that no longer
+            // exists. Both are repaired here, as before.
+            List<Message> latest = messageRepository
+                    .findChatMessages(chat.getId(), PageRequest.of(0, 1)).getContent();
+            if (!latest.isEmpty()) {
+                Message latestMsg = latest.get(0);
+                lastMessages.add(latestMsg);
                 chat.setLastMessageId(latestMsg.getId());
                 chat.setLastMessageAt(latestMsg.getCreatedAt());
                 chatRepository.save(chat);
             }
         }
 
-        int unreadCount = readReceiptRepository.countUnreadMessagesInChat(chat.getId(), currentUserId);
+        // One batch for every last message on the page, however it was found.
+        Map<Long, MessageResponse> lastMessageById = new java.util.HashMap<>();
+        for (MessageResponse response : mapToMessageResponses(lastMessages)) {
+            lastMessageById.put(response.getId(), response);
+        }
+
+        Map<Long, Integer> unreadByChatId = new java.util.HashMap<>();
+        for (Object[] row : readReceiptRepository.countUnreadMessagesInChats(chatIds, currentUserId)) {
+            unreadByChatId.put((Long) row[0], ((Number) row[1]).intValue());
+        }
 
         // Pin/archive state is per-user (see ChatUserPreference) - a chat pinned or archived by
         // one participant must not affect what the other participant sees. Absence of a
-        // preference row (the common case) means "not pinned, not archived".
-        ChatUserPreference preference = chatUserPreferenceRepository
-                .findByChatIdAndUserId(chat.getId(), currentUserId)
-                .orElse(null);
-        boolean isPinned = preference != null && Boolean.TRUE.equals(preference.getIsPinned());
-        boolean isArchived = preference != null && Boolean.TRUE.equals(preference.getIsArchived());
+        // preference row (the common case) means "not pinned, not archived", and the batch query
+        // simply returns no row for those chats.
+        Map<Long, Boolean> pinnedByChatId = new java.util.HashMap<>();
+        Map<Long, Boolean> archivedByChatId = new java.util.HashMap<>();
+        for (Object[] row : chatUserPreferenceRepository
+                .findPreferenceRowsByUserIdAndChatIds(currentUserId, chatIds)) {
+            pinnedByChatId.put((Long) row[0], Boolean.TRUE.equals(row[1]));
+            archivedByChatId.put((Long) row[0], Boolean.TRUE.equals(row[2]));
+        }
 
-        return ChatResponse.builder()
-                .id(chat.getId())
-                .otherUser(otherUserDto)
-                .lastMessage(lastMessageDto)
-                .isPinned(isPinned)
-                .isArchived(isArchived)
-                .unreadCount(unreadCount)
-                .build();
+        List<ChatResponse> responses = new java.util.ArrayList<>(chats.size());
+        for (Chat chat : chats) {
+            User otherUser = otherUserByChatId.get(chat.getId());
+            MessageResponse lastMessageDto = chat.getLastMessageId() != null
+                    ? lastMessageById.get(chat.getLastMessageId())
+                    : null;
+
+            responses.add(ChatResponse.builder()
+                    .id(chat.getId())
+                    .otherUser(mapToUserResponse(otherUser, profileByUserId.get(otherUser.getId())))
+                    .lastMessage(lastMessageDto)
+                    .isPinned(Boolean.TRUE.equals(pinnedByChatId.get(chat.getId())))
+                    .isArchived(Boolean.TRUE.equals(archivedByChatId.get(chat.getId())))
+                    .unreadCount(unreadByChatId.getOrDefault(chat.getId(), 0))
+                    .build());
+        }
+
+        return responses;
     }
 
     private MessageResponse mapToMessageResponse(Message message) {
-        String attachmentPath = null;
-        String attachmentFileName = null;
-        String attachmentFileType = null;
-        Long attachmentFileSize = null;
+        // Deliberately delegates rather than keeping a second implementation: every field, and in
+        // particular the delivery-status rules, must read identically whether one message or a whole
+        // page is being mapped. A batch of one costs the same handful of queries this method used to
+        // run inline.
+        return mapToMessageResponses(List.of(message)).get(0);
+    }
 
-        if (!Boolean.TRUE.equals(message.getIsDeleted())) {
-            List<Attachment> attachments = attachmentRepository.findByMessageId(message.getId());
-            if (attachments != null && !attachments.isEmpty()) {
-                Attachment att = attachments.get(0);
-                attachmentPath = att.getFilePath();
-                attachmentFileName = att.getFileName();
-                attachmentFileType = att.getFileType();
-                attachmentFileSize = att.getFileSize();
+    /**
+     * Maps a whole page of messages with a fixed number of queries instead of a handful per message.
+     *
+     * <p>This is what made opening a conversation slow. Mapped one at a time, each message ran its own
+     * attachment lookup, reaction lookup, read-receipt lookup, delivery-status lookup and settings
+     * lookup - about five round trips each, so a hundred-message page was some five hundred queries
+     * against a remote Postgres, and a group message multiplied the receipt and delivery lookups by
+     * the number of members again. None of it was slow in itself; it was all latency, several hundred
+     * sequential round trips of it, which is why history took seconds to appear while the message
+     * text had been sitting in the database the whole time.
+     *
+     * <p>Everything the page needs is now fetched up front, once, keyed by message id, and the
+     * per-message work is pure in-memory lookup. Settings and group membership are memoised across
+     * the page because a conversation has one recipient or one member list, not one per message.
+     */
+    private List<MessageResponse> mapToMessageResponses(List<Message> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return new java.util.ArrayList<>();
+        }
+
+        List<Long> messageIds = messages.stream().map(Message::getId).collect(Collectors.toList());
+
+        // First attachment per message - findAttachmentRowsByMessageIds orders by id, and putIfAbsent
+        // therefore keeps the same one the old attachments.get(0) picked.
+        Map<Long, Object[]> attachmentByMessageId = new java.util.HashMap<>();
+        for (Object[] row : attachmentRepository.findAttachmentRowsByMessageIds(messageIds)) {
+            attachmentByMessageId.putIfAbsent((Long) row[0], row);
+        }
+
+        Map<Long, List<ReactionResponse>> reactionsByMessageId = new java.util.HashMap<>();
+        for (Object[] row : messageReactionRepository.findReactionRowsByMessageIds(messageIds)) {
+            reactionsByMessageId
+                    .computeIfAbsent((Long) row[0], id -> new java.util.ArrayList<>())
+                    .add(ReactionResponse.builder()
+                            .userId((Long) row[1])
+                            .username((String) row[2])
+                            .reaction((String) row[3])
+                            .build());
+        }
+
+        Map<Long, java.util.Set<Long>> readersByMessageId = new java.util.HashMap<>();
+        for (Object[] row : readReceiptRepository.findReaderIdsByMessageIds(messageIds)) {
+            readersByMessageId
+                    .computeIfAbsent((Long) row[0], id -> new java.util.HashSet<>())
+                    .add((Long) row[1]);
+        }
+
+        Map<Long, java.util.Set<Long>> deliveredToByMessageId = new java.util.HashMap<>();
+        for (Object[] row : deliveryStatusRepository.findRecipientIdsByMessageIdsAndStatus(
+                messageIds, DeliveryStatus.DeliveryStatusType.DELIVERED)) {
+            deliveredToByMessageId
+                    .computeIfAbsent((Long) row[0], id -> new java.util.HashSet<>())
+                    .add((Long) row[1]);
+        }
+
+        // Who each private message was sent to, resolved once. Both chat participants are lazy
+        // associations, so this dereferences at most one chat and two users per conversation on the
+        // page rather than per message - and it lets every read-receipt setting below be fetched in a
+        // single query instead of one per recipient.
+        Map<Long, Long> recipientIdByMessageId = new java.util.HashMap<>();
+        for (Message message : messages) {
+            if (message.getChat() != null) {
+                Long senderId = message.getSender().getId();
+                Long user1Id = message.getChat().getUser1().getId();
+                recipientIdByMessageId.put(message.getId(),
+                        user1Id.equals(senderId) ? message.getChat().getUser2().getId() : user1Id);
             }
         }
 
-        List<ReactionResponse> reactionsList = messageReactionRepository.findByMessageId(message.getId())
-                .stream()
-                .map(r -> ReactionResponse.builder()
-                        .userId(r.getUser().getId())
-                        .username(r.getUser().getUsername())
-                        .reaction(r.getReaction())
-                        .build())
-                .collect(Collectors.toList());
+        // showReadReceipts existed as a setting but was never checked - the sender always saw a
+        // "read" tick regardless of whether the recipient had disabled read receipts for themselves.
+        // Internal unread-count tracking still relies on the ReadReceipt row existing (see
+        // countUnreadMessagesInChat) so we keep creating it either way - only the status *reported
+        // back to the sender* is capped at DELIVERED when the reader opted out, which is the actual
+        // privacy behavior this setting is meant to provide.
+        Map<Long, Boolean> showsReadReceiptsByUserId = new java.util.HashMap<>();
+        if (!recipientIdByMessageId.isEmpty()) {
+            for (Object[] row : userSettingsRepository.findShowReadReceiptsRowsByUserIds(
+                    new java.util.HashSet<>(recipientIdByMessageId.values()))) {
+                showsReadReceiptsByUserId.put((Long) row[0], !Boolean.FALSE.equals(row[1]));
+            }
+        }
 
-        String statusStr = "SENT";
-        if (message.getChat() != null) {
-            Long recipientId = message.getChat().getUser1().getId().equals(message.getSender().getId()) ?
-                    message.getChat().getUser2().getId() : message.getChat().getUser1().getId();
+        // Memoised rather than batched: a page belongs to one group in every case except a search
+        // across conversations, so this is a single query in practice. Cached unfiltered, because
+        // different members send different messages and each one has to drop its own sender.
+        Map<Long, List<Long>> memberIdsByGroupId = new java.util.HashMap<>();
 
-            // showReadReceipts existed as a setting but was never checked - the sender always
-            // saw a "read" tick regardless of whether the recipient had disabled read receipts
-            // for themselves. Internal unread-count tracking still relies on the ReadReceipt row
-            // existing (see countUnreadMessagesInChat) so we keep creating it either way -  only
-            // the status *reported back to the sender* is capped at DELIVERED when the reader
-            // opted out, which is the actual privacy behavior this setting is meant to provide.
-            boolean recipientShowsReadReceipts = userSettingsRepository.findByUserId(recipientId)
-                    .map(s -> !Boolean.FALSE.equals(s.getShowReadReceipts()))
-                    .orElse(true);
+        List<MessageResponse> responses = new java.util.ArrayList<>(messages.size());
+        for (Message message : messages) {
+            Long messageId = message.getId();
 
-            boolean hasRead = readReceiptRepository.findByMessageIdAndUserId(message.getId(), recipientId).isPresent();
-            if (hasRead && recipientShowsReadReceipts) {
-                statusStr = "READ";
-            } else {
-                Optional<DeliveryStatus> ds = deliveryStatusRepository.findByMessageIdAndRecipientId(message.getId(), recipientId);
-                if (ds.isPresent() && ds.get().getStatus() == DeliveryStatus.DeliveryStatusType.DELIVERED) {
-                    statusStr = "DELIVERED";
+            String attachmentPath = null;
+            String attachmentFileName = null;
+            String attachmentFileType = null;
+            Long attachmentFileSize = null;
+
+            if (!Boolean.TRUE.equals(message.getIsDeleted())) {
+                Object[] attachment = attachmentByMessageId.get(messageId);
+                if (attachment != null) {
+                    attachmentPath = (String) attachment[1];
+                    attachmentFileName = (String) attachment[2];
+                    attachmentFileType = (String) attachment[3];
+                    attachmentFileSize = (Long) attachment[4];
                 }
             }
-        } else if (message.getGroup() != null) {
-            // Group messages previously always defaulted to "SENT" - mapToMessageResponse only
-            // ever computed a real status for private chats (message.getChat() != null). Now
-            // that sendMessage() also creates DeliveryStatus rows per group member, aggregate
-            // across every other member: READ only once everyone has read it, DELIVERED once
-            // everyone has received it, otherwise SENT. This mirrors how WhatsApp-style group
-            // ticks behave; a full per-member read breakdown is a separate, larger feature.
-            List<Long> otherMemberIds = groupMemberRepository.findByGroupId(message.getGroup().getId())
-                    .stream()
-                    .map(m -> m.getUser().getId())
-                    .filter(id -> !id.equals(message.getSender().getId()))
-                    .toList();
 
-            if (!otherMemberIds.isEmpty()) {
-                boolean allRead = otherMemberIds.stream().allMatch(id ->
-                        readReceiptRepository.findByMessageIdAndUserId(message.getId(), id).isPresent());
-                if (allRead) {
+            List<ReactionResponse> reactionsList =
+                    reactionsByMessageId.getOrDefault(messageId, java.util.Collections.emptyList());
+
+            java.util.Set<Long> readers =
+                    readersByMessageId.getOrDefault(messageId, java.util.Collections.emptySet());
+            java.util.Set<Long> deliveredTo =
+                    deliveredToByMessageId.getOrDefault(messageId, java.util.Collections.emptySet());
+
+            Long senderId = message.getSender().getId();
+            String statusStr = "SENT";
+
+            Long recipientId = recipientIdByMessageId.get(messageId);
+            if (recipientId != null) {
+                // Absent from the map means no settings row at all, which is the default: enabled.
+                boolean recipientShowsReadReceipts =
+                        !Boolean.FALSE.equals(showsReadReceiptsByUserId.get(recipientId));
+
+                if (readers.contains(recipientId) && recipientShowsReadReceipts) {
                     statusStr = "READ";
-                } else {
-                    boolean allDelivered = otherMemberIds.stream().allMatch(id ->
-                            deliveryStatusRepository.findByMessageIdAndRecipientId(message.getId(), id)
-                                    .map(ds -> ds.getStatus() == DeliveryStatus.DeliveryStatusType.DELIVERED)
-                                    .orElse(false));
-                    if (allDelivered) {
+                } else if (deliveredTo.contains(recipientId)) {
+                    statusStr = "DELIVERED";
+                }
+            } else if (message.getGroup() != null) {
+                // Group messages previously always defaulted to "SENT" - mapToMessageResponse only
+                // ever computed a real status for private chats (message.getChat() != null). Now
+                // that sendMessage() also creates DeliveryStatus rows per group member, aggregate
+                // across every other member: READ only once everyone has read it, DELIVERED once
+                // everyone has received it, otherwise SENT. This mirrors how WhatsApp-style group
+                // ticks behave; a full per-member read breakdown is a separate, larger feature.
+                //
+                // The membership is cached for the whole page but the sender is filtered per message,
+                // since different members send different messages in the same group.
+                List<Long> allMemberIds = memberIdsByGroupId.computeIfAbsent(
+                        message.getGroup().getId(),
+                        groupMemberRepository::findMemberIdsByGroupId);
+
+                List<Long> otherMemberIds = allMemberIds.stream()
+                        .filter(id -> !id.equals(senderId))
+                        .collect(Collectors.toList());
+
+                if (!otherMemberIds.isEmpty()) {
+                    if (readers.containsAll(otherMemberIds)) {
+                        statusStr = "READ";
+                    } else if (deliveredTo.containsAll(otherMemberIds)) {
                         statusStr = "DELIVERED";
                     }
                 }
             }
+
+            responses.add(MessageResponse.builder()
+                    .id(message.getId())
+                    .chatId(message.getChat() != null ? message.getChat().getId() : null)
+                    .groupId(message.getGroup() != null ? message.getGroup().getId() : null)
+                    .senderId(senderId)
+                    .senderUsername(message.getSender().getUsername())
+                    // Always derive the tombstone text from the deletion flag. This also repairs
+                    // any historical rows that were marked deleted before the message text update
+                    // was introduced, so every client sees the same placeholder after a sync.
+                    .messageText(Boolean.TRUE.equals(message.getIsDeleted()) ? "This message was deleted" : message.getMessageText())
+                    .messageType(message.getMessageType())
+                    .isEdited(message.getIsEdited())
+                    .editedAt(message.getEditedAt())
+                    .isDeleted(message.getIsDeleted())
+                    .createdAt(message.getCreatedAt())
+                    .attachmentPath(attachmentPath)
+                    .attachmentFileName(attachmentFileName)
+                    .attachmentFileType(attachmentFileType)
+                    .attachmentFileSize(attachmentFileSize)
+                    .reactions(reactionsList)
+                    .deliveryStatus(statusStr)
+                    .build());
         }
 
-        return MessageResponse.builder()
-                .id(message.getId())
-                .chatId(message.getChat() != null ? message.getChat().getId() : null)
-                .groupId(message.getGroup() != null ? message.getGroup().getId() : null)
-                .senderId(message.getSender().getId())
-                .senderUsername(message.getSender().getUsername())
-                // Always derive the tombstone text from the deletion flag. This also repairs
-                // any historical rows that were marked deleted before the message text update
-                // was introduced, so every client sees the same placeholder after a sync.
-                .messageText(Boolean.TRUE.equals(message.getIsDeleted()) ? "This message was deleted" : message.getMessageText())
-                .messageType(message.getMessageType())
-                .isEdited(message.getIsEdited())
-                .editedAt(message.getEditedAt())
-                .isDeleted(message.getIsDeleted())
-                .createdAt(message.getCreatedAt())
-                .attachmentPath(attachmentPath)
-                .attachmentFileName(attachmentFileName)
-                .attachmentFileType(attachmentFileType)
-                .attachmentFileSize(attachmentFileSize)
-                .reactions(reactionsList)
-                .deliveryStatus(statusStr)
-                .build();
+        return responses;
     }
 
     private UserResponse mapToUserResponse(User user) {
-        UserProfile profile = userProfileRepository.findByUserId(user.getId()).orElse(null);
+        return mapToUserResponse(user, userProfileRepository.findByUserId(user.getId()).orElse(null));
+    }
+
+    /**
+     * Builds the user DTO from a profile the caller already has, so a list of chats doesn't run one
+     * profile lookup per row. {@code profile} may be null - a user without a profile row falls back to
+     * their username, exactly as before.
+     */
+    private UserResponse mapToUserResponse(User user, UserProfile profile) {
         return UserResponse.builder()
                 .id(user.getId())
                 .username(user.getUsername())
@@ -497,11 +673,12 @@ public class MessageServiceImpl implements MessageService {
         // the row makes the message unread again with no extra state and no schema change, and
         // markChatAsRead() recreates it when they next open the conversation.
         //
-        // Deleted one at a time through the existing finder rather than as a bulk JPQL delete: a
-        // bulk delete bypasses the persistence context, so the read-receipt lookup that
-        // mapToMessageResponse() performs below could still be answered from Hibernate's cache and
-        // report the message as READ. Recipient counts here are one (private) or the group's
-        // membership, so the extra queries are cheap.
+        // Deleted one at a time through the existing finder rather than as a bulk JPQL delete, so the
+        // removals go through the persistence context and Hibernate's own caches stay consistent with
+        // the database. Recipient counts here are one (private) or the group's membership, so the
+        // extra queries are cheap. mapToMessageResponses() below reads receipts with a JPQL query,
+        // which auto-flushes these deletes first and therefore sees the message as unread again -
+        // which is the point: the sender's tick has to drop back out of "read".
         List<Long> recipientIds = otherParticipantIds(savedMessage, userId);
         for (Long recipientId : recipientIds) {
             readReceiptRepository.findByMessageIdAndUserId(savedMessage.getId(), recipientId)
@@ -530,9 +707,8 @@ public class MessageServiceImpl implements MessageService {
             return List.of(otherId);
         }
         if (message.getGroup() != null) {
-            return groupMemberRepository.findByGroupId(message.getGroup().getId())
+            return groupMemberRepository.findMemberIdsByGroupId(message.getGroup().getId())
                     .stream()
-                    .map(m -> m.getUser().getId())
                     .filter(id -> !id.equals(actorId))
                     .collect(Collectors.toList());
         }
@@ -715,11 +891,8 @@ public class MessageServiceImpl implements MessageService {
     @Transactional(readOnly = true)
     public List<MessageResponse> searchMessages(Long userId, String query, int page, int size) {
         Pageable pageable = PageRequest.of(page, size);
-        return messageRepository.searchMessages(userId, query, pageable)
-                .getContent()
-                .stream()
-                .map(this::mapToMessageResponse)
-                .collect(Collectors.toList());
+        return mapToMessageResponses(
+                messageRepository.searchMessages(userId, query, pageable).getContent());
     }
 
     private String getUserDisplayName(User user) {

@@ -9,6 +9,8 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -21,6 +23,18 @@ public interface ChatRepository extends JpaRepository<Chat, Long> {
            "(c.user1.id = :userId1 AND c.user2.id = :userId2) OR " +
            "(c.user1.id = :userId2 AND c.user2.id = :userId1)")
     Optional<Chat> findChatBetweenUsers(@Param("userId1") Long userId1, @Param("userId2") Long userId2);
+
+    /**
+     * Both participants of several chats, as {@code [chatId, user1Id, user2Id]} rows.
+     *
+     * <p>{@code user1} and {@code user2} are lazy associations, so working out which participant is
+     * "the other one" by calling {@code chat.getUser1().getId()} initialises two proxies per chat -
+     * two extra queries per row of the chat list. Selecting {@code c.user1.id} instead reads the
+     * foreign-key column that is already on the chat row, with no join and no proxy. See
+     * MessageServiceImpl.mapToChatResponses.
+     */
+    @Query("SELECT c.id, c.user1.id, c.user2.id FROM Chat c WHERE c.id IN :chatIds")
+    List<Object[]> findParticipantIdRowsByChatIds(@Param("chatIds") Collection<Long> chatIds);
 
     /**
      * Claims the single chat row for a user pair, doing nothing if another transaction already

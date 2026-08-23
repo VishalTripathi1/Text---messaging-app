@@ -204,9 +204,8 @@ public class ChatController {
                 // Previously this branch didn't exist at all - edits, deletes, and reactions on
                 // group messages were silently never broadcast to other group members in real
                 // time (they'd only see the change after their next full sync).
-                List<Long> memberIds = groupMemberRepository.findByGroupId(response.getGroupId())
+                List<Long> memberIds = groupMemberRepository.findMemberIdsByGroupId(response.getGroupId())
                         .stream()
-                        .map(m -> m.getUser().getId())
                         .filter(id -> !id.equals(senderId))
                         .toList();
                 boolean allDelivered = !memberIds.isEmpty();

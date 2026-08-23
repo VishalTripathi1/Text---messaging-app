@@ -14,6 +14,16 @@ interface ChatDao {
     @Query("SELECT * FROM chats ORDER BY isPinned DESC, lastMessageAt DESC")
     fun getAllChatsFlow(): Flow<List<ChatEntity>>
 
+    /**
+     * The conversations most likely to be opened next, in the order the list shows them.
+     *
+     * Used by ChatRepositoryImpl.prefetchRecentConversations to pull their history into the cache
+     * before the user taps in, so opening a conversation for the first time doesn't have to wait on
+     * the network.
+     */
+    @Query("SELECT * FROM chats ORDER BY isPinned DESC, lastMessageAt DESC LIMIT :limit")
+    fun getRecentChats(limit: Int): List<ChatEntity>
+
     @Query("SELECT * FROM chats WHERE id = :chatId")
     fun getChatById(chatId: Long): ChatEntity?
 

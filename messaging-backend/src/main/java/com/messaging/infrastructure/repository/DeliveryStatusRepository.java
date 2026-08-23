@@ -35,4 +35,21 @@ public interface DeliveryStatusRepository extends JpaRepository<DeliveryStatus, 
             @org.springframework.data.repository.query.Param("recipientId") Long recipientId,
             @org.springframework.data.repository.query.Param("status") DeliveryStatus.DeliveryStatusType status
     );
+
+    /**
+     * Who each of {@code messageIds} has reached, as {@code [messageId, recipientId]} rows, limited to
+     * rows in {@code status}.
+     *
+     * <p>Mapping a page of messages needs the delivery state of every message at once; doing it with
+     * {@link #findByMessageIdAndRecipientId} cost one query per message (per member, in a group). See
+     * MessageServiceImpl.mapToMessageResponses.
+     */
+    @org.springframework.data.jpa.repository.Query(
+        "SELECT ds.message.id, ds.recipient.id FROM DeliveryStatus ds " +
+        "WHERE ds.message.id IN :messageIds AND ds.status = :status"
+    )
+    List<Object[]> findRecipientIdsByMessageIdsAndStatus(
+            @org.springframework.data.repository.query.Param("messageIds") java.util.Collection<Long> messageIds,
+            @org.springframework.data.repository.query.Param("status") DeliveryStatus.DeliveryStatusType status
+    );
 }

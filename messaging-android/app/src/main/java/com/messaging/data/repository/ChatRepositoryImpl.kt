@@ -57,6 +57,12 @@ class ChatRepositoryImpl @Inject constructor(
     /** Guards flushUnsentMessages() so overlapping reconnects cannot send the same row twice. */
     private val isFlushingUnsent = AtomicBoolean(false)
 
+    /** Guards prefetchRecentConversations() so overlapping reconnects cannot fetch the same history twice. */
+    private val isPrefetching = AtomicBoolean(false)
+
+    /** How many of the most recent conversations prefetchRecentConversations() will warm up. */
+    private val prefetchConversationLimit = 10
+
     /** Half-width of the window used to recognise an already-stored message - see flushUnsentMessages(). */
     private val duplicateWindowMillis = 120_000L
 
@@ -127,10 +133,46 @@ class ChatRepositoryImpl @Inject constructor(
                 // exactly one true per genuine reconnect.
                 .filter { it }
                 .collect {
-                    Log.d("ChatRepositoryImpl", "WebSocket connected - resyncing and flushing unsent messages")
+                    Log.d("ChatRepositoryImpl", "WebSocket connected - resyncing, flushing unsent messages and warming conversation history")
                     syncChats()
                     flushUnsentMessages()
+                    prefetchRecentConversations()
                 }
+        }
+    }
+
+    /**
+     * Pulls history for recent conversations that have none cached yet.
+     *
+     * Opening a conversation renders straight from Room, so the second visit is instant - it is the
+     * first one that has to wait for the server, and on a free-tier instance that wait is what makes
+     * the app feel like it is loading old messages from scratch. Doing it here, off the back of a
+     * successful connection, spends that wait while the user is still looking at the chat list.
+     *
+     * Deliberately only for conversations with nothing cached: a conversation that already has
+     * messages is redrawn immediately from the cache and refreshed by its own screen, so re-fetching
+     * it here would cost bandwidth to change nothing. That also makes this a one-off per conversation
+     * rather than something that repeats on every reconnect. Sequential rather than parallel, and
+     * capped, to stay well clear of starving a foreground request that the user is actually waiting on.
+     */
+    private suspend fun prefetchRecentConversations() {
+        if (!isPrefetching.compareAndSet(false, true)) return
+        try {
+            for (chat in chatDao.getRecentChats(prefetchConversationLimit)) {
+                val alreadyCached = if (chat.isGroup) {
+                    messageDao.getLatestMessageForGroup(-chat.id) != null
+                } else {
+                    messageDao.getLatestMessageForChat(chat.id) != null
+                }
+                if (alreadyCached) continue
+                // Negative ids are groups; syncMessages routes them to syncGroupMessages itself.
+                syncMessages(chat.id)
+            }
+        } catch (e: Exception) {
+            // Prefetching is opportunistic - a failure here must not affect anything else.
+            Log.d("ChatRepositoryImpl", "Conversation prefetch stopped: ${e.message}")
+        } finally {
+            isPrefetching.set(false)
         }
     }
 
@@ -949,21 +991,69 @@ class ChatRepositoryImpl @Inject constructor(
         }
     }
 
+    /**
+     * Applies an edit locally, then sends it and takes the server's word for the resulting tick.
+     *
+     * Two things here are deliberate.
+     *
+     * The server response is stored *without* [keepBestStatus]. An edit is the one case where
+     * delivery genuinely moves backwards: editing a message the other person had already read means
+     * they have now read something that is no longer there, so the server drops their read receipt
+     * (see MessageServiceImpl.editMessage) and reports DELIVERED again - it is on their device, but
+     * the new text has not been read. Passing that through keepBestStatus, whose entire job is to
+     * refuse downgrades, clamped it straight back to READ and left the sender looking at a blue tick
+     * for text nobody had seen. From here the tick behaves like a new message's: double grey until
+     * they reopen the conversation, then blue again via the READ_RECEIPT frame.
+     *
+     * The chat-list preview only moves if the edited message is the newest one, and it is updated in
+     * place rather than by rewriting the whole row - editing something said hours ago must not
+     * rewrite the list to claim those are the conversation's latest words, nor reorder the list by
+     * touching lastMessageAt.
+     */
     override suspend fun editMessage(messageId: Long, newText: String): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             messageDao.updateMessageText(messageId, newText)
             val msgEntity = messageDao.getMessageById(messageId)
-            if (msgEntity?.chatId != null) {
-                val chat = chatDao.getChatById(msgEntity.chatId)
-                if (chat != null) {
-                    chatDao.insertChat(chat.copy(lastMessageText = newText))
-                }
+
+            val groupId = msgEntity?.groupId
+            val chatId = msgEntity?.chatId
+            val conversationId = when {
+                groupId != null -> -groupId
+                chatId != null -> chatId
+                else -> null
             }
+            val latest = when {
+                groupId != null -> messageDao.getLatestMessageForGroup(groupId)
+                chatId != null -> messageDao.getLatestMessageForChat(chatId)
+                else -> null
+            }
+            val isNewestInConversation = latest?.id == messageId
+
+            if (msgEntity != null && conversationId != null && isNewestInConversation) {
+                chatDao.updateLastMessageOnly(
+                    chatId = conversationId,
+                    text = newText,
+                    senderId = msgEntity.senderId,
+                    at = msgEntity.createdAt
+                )
+            }
+
             if (messageId > 0) {
                 val response = chatApiService.editMessage(messageId, newText)
                 val body = response.body()
                 if (response.isSuccessful && body != null) {
-                    messageDao.insertMessage(keepBestStatus(body.toEntity(body.deliveryStatus ?: "SENT")))
+                    val serverStatus = body.deliveryStatus ?: "SENT"
+                    messageDao.insertMessage(body.toEntity(serverStatus))
+                    if (msgEntity != null && conversationId != null && isNewestInConversation) {
+                        // Keyed on the new text, since updateLastMessageOnly above has already
+                        // written it as the preview.
+                        chatDao.updateLastMessageStatus(
+                            chatId = conversationId,
+                            senderId = msgEntity.senderId,
+                            text = newText,
+                            status = serverStatus
+                        )
+                    }
                 }
             }
             Result.success(Unit)
