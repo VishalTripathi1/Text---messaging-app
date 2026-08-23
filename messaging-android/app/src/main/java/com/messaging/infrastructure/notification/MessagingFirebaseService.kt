@@ -13,11 +13,14 @@ import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import com.messaging.MainActivity
 import com.messaging.domain.repository.ChatRepository
+import com.messaging.util.TokenManager
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import timber.log.Timber
 import javax.inject.Inject
 
@@ -29,6 +32,9 @@ class MessagingFirebaseService : FirebaseMessagingService() {
 
     @Inject
     lateinit var chatRepository: ChatRepository
+
+    @Inject
+    lateinit var tokenManager: TokenManager
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -79,7 +85,31 @@ class MessagingFirebaseService : FirebaseMessagingService() {
         }
         Timber.d("Push type=$type deepLinkChatId=$deepLinkChatId data=${remoteMessage.data}")
 
-        showNotification(title, body, deepLinkChatId)
+        // runBlocking, not serviceScope.launch: onMessageReceived already runs on an FCM background
+        // thread, and the OS may tear this service down as soon as it returns. Posting the
+        // notification from a coroutine would race that teardown and silently drop alerts. The three
+        // reads are local DataStore lookups, so the block is short.
+        //
+        // The Room sync below deliberately ignores these settings: turning notifications off should
+        // silence the alert, not stop messages from arriving.
+        val (notificationsEnabled, soundEnabled, vibrationEnabled) = runBlocking {
+            Triple(
+                tokenManager.notificationsEnabled.first(),
+                tokenManager.soundEnabled.first(),
+                tokenManager.vibrationEnabled.first()
+            )
+        }
+        if (notificationsEnabled) {
+            showNotification(
+                title = title,
+                body = body,
+                deepLinkChatId = deepLinkChatId,
+                soundEnabled = soundEnabled,
+                vibrationEnabled = vibrationEnabled
+            )
+        } else {
+            Timber.d("Notifications disabled in settings - suppressing alert for chat $deepLinkChatId")
+        }
 
         // Pull the message into the local database. A push is the only delivery route while the
         // app is backgrounded - the OS drops the WebSocket, so the server's sendToUserStatic()
@@ -97,21 +127,70 @@ class MessagingFirebaseService : FirebaseMessagingService() {
         }
     }
 
-    @SuppressLint("NotificationPermission")
-    private fun showNotification(title: String, body: String, deepLinkChatId: Long?) {
-        val channelId = "chat_messages_channel"
-        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    /**
+     * Returns the channel id matching the current sound/vibration preferences, creating that channel
+     * the first time the combination is used.
+     *
+     * Four possible channels rather than one, because from Android 8 sound and vibration are
+     * properties of the channel, not of the individual notification: the builder's setSound() and
+     * setVibrate() are ignored, and createNotificationChannel() silently declines to change those
+     * fields on a channel id that already exists. A single fixed channel therefore can never be
+     * quietened after it has been created once - which is precisely why the Play Sounds and Vibrate
+     * switches appeared to do nothing on a device that had already received one notification.
+     * Deleting and recreating the channel is not a way around it either: Android remembers the
+     * settings of deleted channels and restores them when the same id reappears.
+     *
+     * Channels are created lazily, so someone who never touches these switches still sees a single
+     * entry for the app under the system notification settings.
+     */
+    private fun resolveChannel(
+        manager: NotificationManager,
+        soundEnabled: Boolean,
+        vibrationEnabled: Boolean
+    ): String {
+        val channelId = "chat_messages" +
+                (if (soundEnabled) "_sound" else "_silent") +
+                (if (vibrationEnabled) "_vibrate" else "_still")
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return channelId
+
+        // The original single channel is left over on devices that ran an earlier build. It is no
+        // longer posted to, so remove it rather than leaving a dead entry in system settings.
+        manager.deleteNotificationChannel(LEGACY_CHANNEL_ID)
+
+        if (manager.getNotificationChannel(channelId) == null) {
+            val channelName = when {
+                soundEnabled && vibrationEnabled -> "Chat Messages"
+                soundEnabled -> "Chat Messages (no vibration)"
+                vibrationEnabled -> "Chat Messages (vibrate only)"
+                else -> "Chat Messages (silent)"
+            }
             val channel = NotificationChannel(
                 channelId,
-                "Chat Messages",
+                channelName,
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "Displays incoming chat messages"
+                enableVibration(vibrationEnabled)
+                if (!soundEnabled) {
+                    setSound(null, null)
+                }
             }
-            notificationManager.createNotificationChannel(channel)
+            manager.createNotificationChannel(channel)
         }
+        return channelId
+    }
+
+    @SuppressLint("NotificationPermission")
+    private fun showNotification(
+        title: String,
+        body: String,
+        deepLinkChatId: Long?,
+        soundEnabled: Boolean,
+        vibrationEnabled: Boolean
+    ) {
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val channelId = resolveChannel(notificationManager, soundEnabled, vibrationEnabled)
 
         val intent = Intent(this, MainActivity::class.java).apply {
             // FLAG_ACTIVITY_NEW_TASK is required because the intent is launched from a service
@@ -149,8 +228,25 @@ class MessagingFirebaseService : FirebaseMessagingService() {
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(pendingIntent)
+            .apply {
+                // minSdk is 24, so Android 7 is still supported and there are no channels there -
+                // on those versions sound and vibration come from the notification itself, and
+                // setDefaults is the only thing that honours the two switches. On Android 8+ this
+                // is ignored in favour of the channel resolved above.
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                    var defaults = 0
+                    if (soundEnabled) defaults = defaults or NotificationCompat.DEFAULT_SOUND
+                    if (vibrationEnabled) defaults = defaults or NotificationCompat.DEFAULT_VIBRATE
+                    setDefaults(defaults)
+                }
+            }
             .build()
 
         notificationManager.notify(notificationId, notification)
+    }
+
+    companion object {
+        /** Channel id used before sound/vibration became selectable. See resolveChannel(). */
+        private const val LEGACY_CHANNEL_ID = "chat_messages_channel"
     }
 }

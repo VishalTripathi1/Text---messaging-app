@@ -1,6 +1,7 @@
 package com.messaging.util
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -21,6 +22,9 @@ class TokenManager(private val context: Context) {
         private val USER_ID_KEY = longPreferencesKey("user_id")
         private val USERNAME_KEY = stringPreferencesKey("username")
         private val THEME_KEY = stringPreferencesKey("theme")
+        private val NOTIFICATIONS_ENABLED_KEY = booleanPreferencesKey("notifications_enabled")
+        private val SOUND_ENABLED_KEY = booleanPreferencesKey("sound_enabled")
+        private val VIBRATION_ENABLED_KEY = booleanPreferencesKey("vibration_enabled")
     }
 
     suspend fun saveTokens(accessToken: String, refreshToken: String, userId: Long, username: String) {
@@ -35,6 +39,24 @@ class TokenManager(private val context: Context) {
     suspend fun saveTheme(theme: String) {
         context.dataStore.edit { preferences ->
             preferences[THEME_KEY] = theme
+        }
+    }
+
+    /**
+     * Keeps a local copy of the server-side notification preferences. MessagingFirebaseService
+     * decides whether to post a notification while running in the background, with no ViewModel
+     * around it and no guarantee that a network call would return in time, so it needs these
+     * values available locally and synchronously.
+     */
+    suspend fun saveNotificationPreferences(
+        notificationsEnabled: Boolean,
+        soundEnabled: Boolean,
+        vibrationEnabled: Boolean
+    ) {
+        context.dataStore.edit { preferences ->
+            preferences[NOTIFICATIONS_ENABLED_KEY] = notificationsEnabled
+            preferences[SOUND_ENABLED_KEY] = soundEnabled
+            preferences[VIBRATION_ENABLED_KEY] = vibrationEnabled
         }
     }
 
@@ -58,6 +80,20 @@ class TokenManager(private val context: Context) {
         preferences[THEME_KEY]
     }
 
+    // Default to true for all three: a fresh install has not synced settings yet, and the server
+    // creates every account with notifications on (see AuthServiceImpl), so silence would be wrong.
+    val notificationsEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[NOTIFICATIONS_ENABLED_KEY] ?: true
+    }
+
+    val soundEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[SOUND_ENABLED_KEY] ?: true
+    }
+
+    val vibrationEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[VIBRATION_ENABLED_KEY] ?: true
+    }
+
     suspend fun clearTokens() {
         context.dataStore.edit { preferences ->
             preferences.remove(ACCESS_TOKEN_KEY)
@@ -65,6 +101,9 @@ class TokenManager(private val context: Context) {
             preferences.remove(USER_ID_KEY)
             preferences.remove(USERNAME_KEY)
             preferences.remove(THEME_KEY)
+            preferences.remove(NOTIFICATIONS_ENABLED_KEY)
+            preferences.remove(SOUND_ENABLED_KEY)
+            preferences.remove(VIBRATION_ENABLED_KEY)
         }
     }
 }

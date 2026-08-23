@@ -92,16 +92,26 @@ fun ChatScreen(
     // See the identical fix + rationale in ChatListScreen.kt - without this, reopening an
     // already-composed chat screen (app backgrounded/resumed, or screen unlocked) never
     // refetched missed messages or re-verified the WebSocket connection.
+    //
+    // ON_PAUSE is tracked as well so the ViewModel knows whether the conversation is actually
+    // being looked at: messages arriving over the still-connected WebSocket while the app is
+    // backgrounded must not be reported to the sender as read.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                viewModel.syncMessages()
-                viewModel.markAsRead()
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    viewModel.syncMessages()
+                    viewModel.markAsRead()
+                    viewModel.onScreenVisible()
+                }
+                Lifecycle.Event.ON_PAUSE -> viewModel.onScreenHidden()
+                else -> {}
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
+            viewModel.onScreenHidden()
             lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }

@@ -5,6 +5,7 @@ import com.google.firebase.messaging.FirebaseMessaging;
 import com.google.firebase.messaging.AndroidConfig;
 import com.messaging.domain.entity.Device;
 import com.messaging.infrastructure.repository.DeviceRepository;
+import com.messaging.infrastructure.repository.UserSettingsRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -21,9 +22,23 @@ import java.util.Map;
 public class PushNotificationServiceImpl implements PushNotificationService {
 
     private final DeviceRepository deviceRepository;
+    private final UserSettingsRepository userSettingsRepository;
 
     @Override
     public void sendPushNotification(Long recipientId, String title, String body, Map<String, String> data) {
+        // The recipient's own notificationsEnabled setting decides whether a push is sent at all.
+        // Checked here rather than at the two MessageServiceImpl call sites so private-chat and
+        // group pushes cannot drift apart, and so nothing is spent delivering an alert the device
+        // is only going to discard. The client checks its cached copy too, which covers the window
+        // where a setting was changed while the phone was offline.
+        boolean notificationsEnabled = userSettingsRepository.findByUserId(recipientId)
+                .map(settings -> !Boolean.FALSE.equals(settings.getNotificationsEnabled()))
+                .orElse(true);
+        if (!notificationsEnabled) {
+            log.debug("User {} has notifications disabled. Skipping push notification.", recipientId);
+            return;
+        }
+
         List<Device> activeDevices = deviceRepository.findByUserIdAndIsActiveTrue(recipientId);
         
         if (activeDevices.isEmpty()) {

@@ -58,6 +58,17 @@ class ChatViewModel @Inject constructor(
     var currentUserId: Long = 0
     private var peerTypingTimeout: Job? = null
 
+    // True only while this conversation is on screen AND the app is in the foreground. A read
+    // receipt must never be sent for a message that arrived while the app was backgrounded: the
+    // WebSocket connection survives that state, so without this gate the sender would see a blue
+    // tick for a message nobody had actually looked at.
+    private val isScreenVisible = MutableStateFlow(false)
+
+    // Highest incoming message id already acknowledged. The messages flow re-emits on every change
+    // to the conversation, so without a high-water mark a burst of five messages would fire five
+    // separate mark-as-read requests.
+    private var lastAcknowledgedIncomingId = 0L
+
     // Becomes true once chat metadata (in particular otherUserId, needed to route messages to
     // the recipient in real time over WebSocket) has finished loading. sendMessage() suspends
     // on this so that messages typed immediately after opening a chat aren't sent with a null
@@ -123,6 +134,33 @@ class ChatViewModel @Inject constructor(
         syncMessages()
         markAsRead()
 
+        // Acknowledge messages that arrive while the chat is already open. markAsRead() used to run
+        // only here in init and on ON_RESUME, so a message received while the reader was sitting in
+        // the conversation produced no receipt at all - the sender's ticks stayed grey until the
+        // reader backgrounded the app or backed out and re-entered, which is what made read
+        // receipts look like they were not real time.
+        //
+        // Collects the messages flow rather than the raw WebSocket stream so it also covers
+        // messages that arrive through the syncMessages() REST fallback after the socket had
+        // dropped. Combined with isScreenVisible so that a message received while the app was in
+        // the background is acknowledged the moment the user actually returns to it.
+        viewModelScope.launch {
+            val meId = tokenManager.userId.firstOrNull() ?: 0L
+            combine(messages, isScreenVisible) { list, visible -> list to visible }
+                .collect { (list, visible) ->
+                    if (!visible) return@collect
+                    // Negative ids are locally-created outgoing messages awaiting a server id, so
+                    // an incoming message always has a real one.
+                    val newestIncoming = list
+                        .filter { it.senderId != meId && it.id > 0 }
+                        .maxOfOrNull { it.id } ?: return@collect
+                    if (newestIncoming > lastAcknowledgedIncomingId) {
+                        lastAcknowledgedIncomingId = newestIncoming
+                        markAsRead()
+                    }
+                }
+        }
+
         // Keep the header's online/offline status live. Previously _otherUserStatus was only
         // ever set once (the snapshot read above), so a USER_STATUS update arriving over the
         // WebSocket while this chat screen was already open wouldn't be reflected until the
@@ -155,6 +193,16 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             chatRepository.markChatAsRead(chatId)
         }
+    }
+
+    /** Called from the screen's ON_RESUME - see isScreenVisible. */
+    fun onScreenVisible() {
+        isScreenVisible.value = true
+    }
+
+    /** Called from the screen's ON_PAUSE and on disposal - see isScreenVisible. */
+    fun onScreenHidden() {
+        isScreenVisible.value = false
     }
 
     fun sendMessage(text: String, type: String = "TEXT") {

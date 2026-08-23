@@ -62,10 +62,26 @@ class SettingsViewModel @Inject constructor(
                     settingsResponse.theme?.let {
                         tokenManager.saveTheme(it)
                     }
+                    mirrorNotificationPreferences(settingsResponse)
                 }
                 .onFailure { _errorMessage.value = it.message }
             _isLoading.value = false
         }
+    }
+
+    /**
+     * Copies the notification preferences into local storage so MessagingFirebaseService can honour
+     * them. Without this the three switches round-tripped to the server and back into the UI while
+     * the code that actually posts notifications never saw them, which is why they appeared to do
+     * nothing at all. Read receipts and the typing indicator did work, because those two are
+     * enforced on the server (ChatWebSocketHandler / ChatController) rather than on the device.
+     */
+    private suspend fun mirrorNotificationPreferences(settings: UserSettingsResponse) {
+        tokenManager.saveNotificationPreferences(
+            notificationsEnabled = settings.notificationsEnabled ?: true,
+            soundEnabled = settings.soundEnabled ?: true,
+            vibrationEnabled = settings.vibrationEnabled ?: true
+        )
     }
 
     fun updateTheme(theme: String) {
@@ -116,6 +132,7 @@ class SettingsViewModel @Inject constructor(
             )
                 .onSuccess {
                     _settings.value = it
+                    mirrorNotificationPreferences(it)
                     _successMessage.value = "Setting updated"
                 }
                 .onFailure { _errorMessage.value = it.message ?: "Update failed" }
