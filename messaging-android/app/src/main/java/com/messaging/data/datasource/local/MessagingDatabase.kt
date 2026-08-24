@@ -9,7 +9,7 @@ import androidx.room.TypeConverters
  */
 @Database(
     entities = [UserEntity::class, ChatEntity::class, MessageEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 @TypeConverters(Converters::class)

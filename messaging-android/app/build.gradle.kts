@@ -123,6 +123,7 @@ dependencies {
     // Logging
     implementation(libs.timber)
     implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
 
     // Testing
     testImplementation(libs.junit)

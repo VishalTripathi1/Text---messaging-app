@@ -2,6 +2,8 @@ package com.messaging.di
 
 import android.content.Context
 import androidx.room.Room
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.messaging.data.datasource.local.MessagingDatabase
 import com.messaging.data.datasource.local.ChatDao
 import com.messaging.data.datasource.local.MessageDao
@@ -19,6 +21,12 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object AppModule {
 
+    private val MIGRATION_3_4 = object : Migration(3, 4) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL("ALTER TABLE chats ADD COLUMN otherBio TEXT")
+        }
+    }
+
     @Singleton
     @Provides
     fun provideDatabase(
@@ -28,7 +36,7 @@ object AppModule {
             context,
             MessagingDatabase::class.java,
             "messaging_db"
-        ).fallbackToDestructiveMigration().build()
+        ).addMigrations(MIGRATION_3_4).fallbackToDestructiveMigration().build()
     }
 
     @Singleton

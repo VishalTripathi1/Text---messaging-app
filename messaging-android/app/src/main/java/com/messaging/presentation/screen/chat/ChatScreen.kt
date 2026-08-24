@@ -3,11 +3,16 @@ package com.messaging.presentation.screen.chat
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.media.MediaRecorder
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import androidx.exifinterface.media.ExifInterface
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -29,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -94,6 +100,7 @@ fun ChatScreen(
     val otherUserStatus by viewModel.otherUserStatus.collectAsState()
     val otherUserProfilePictureUrl by viewModel.otherUserProfilePictureUrl.collectAsState()
     val otherUserUsername by viewModel.otherUserUsername.collectAsState()
+    val otherUserBio by viewModel.otherUserBio.collectAsState()
     val isPeerTyping by viewModel.isPeerTyping.collectAsState()
 
     var textState by remember { mutableStateOf("") }
@@ -145,11 +152,26 @@ fun ChatScreen(
     var isRecording by remember { mutableStateOf(false) }
     var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
     var recordingFile by remember { mutableStateOf<File?>(null) }
+    var recordingSeconds by remember { mutableStateOf(0) }
 
-    fun stageCameraPhoto(bitmap: Bitmap) {
-        val file = File(context.cacheDir, "photo_${System.currentTimeMillis()}.jpg")
-        FileOutputStream(file).use { output -> bitmap.compress(Bitmap.CompressFormat.JPEG, 75, output) }
-        pendingAttachment = PendingAttachment(Uri.fromFile(file), file.name, "image/jpeg", "IMAGE")
+    fun stageCameraPhoto(file: File) {
+        val source = BitmapFactory.decodeFile(file.absolutePath) ?: return
+        val matrix = Matrix()
+        when (ExifInterface(file.absolutePath).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
+        }
+        val oriented = Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+        val scale = minOf(1f, 1920f / maxOf(oriented.width, oriented.height).toFloat())
+        val resized = if (scale < 1f) Bitmap.createScaledBitmap(oriented, (oriented.width * scale).toInt(), (oriented.height * scale).toInt(), true) else oriented
+        FileOutputStream(file).use { output -> resized.compress(Bitmap.CompressFormat.JPEG, 90, output) }
+        if (resized !== oriented) resized.recycle()
+        if (oriented !== source) oriented.recycle()
+        source.recycle()
+        pendingAttachment = PendingAttachment(FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file), file.name, "image/jpeg", "IMAGE")
     }
 
     fun stopRecording() {
@@ -178,13 +200,20 @@ fun ChatScreen(
         recordingFile = file
         recorder = newRecorder
         isRecording = true
+        recordingSeconds = 0
     }
 
-    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
-        if (bitmap != null) stageCameraPhoto(bitmap)
+    var cameraFile by remember { mutableStateOf<File?>(null) }
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { captured ->
+        val file = cameraFile
+        if (captured && file != null) stageCameraPhoto(file) else file?.delete()
     }
     val cameraPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) cameraLauncher.launch(null)
+        if (granted) {
+            val file = File(context.cacheDir, "photo_${System.currentTimeMillis()}.jpg")
+            cameraFile = file
+            cameraLauncher.launch(FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file))
+        }
     }
     val microphonePermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) startRecording()
@@ -192,7 +221,10 @@ fun ChatScreen(
 
     LaunchedEffect(isRecording) {
         if (isRecording) {
-            kotlinx.coroutines.delay(60_000)
+            while (isRecording && recordingSeconds < 60) {
+                kotlinx.coroutines.delay(1_000)
+                recordingSeconds++
+            }
             if (isRecording) stopRecording()
         }
     }
@@ -285,7 +317,8 @@ fun ChatScreen(
                                     AsyncImage(
                                         model = otherUserProfilePictureUrl!!.let { if (it.startsWith("http")) it else Constants.ATTACHMENT_BASE_URL + it },
                                         contentDescription = "Profile picture",
-                                        modifier = Modifier.size(36.dp).clip(CircleShape)
+                                        modifier = Modifier.size(36.dp).clip(CircleShape),
+                                        contentScale = ContentScale.Crop
                                     )
                                 } else {
                                     Box(
@@ -417,6 +450,16 @@ fun ChatScreen(
             }
 
             // Input Panel
+            if (isRecording) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(Modifier.size(10.dp).clip(CircleShape).background(MaterialTheme.colorScheme.error))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Recording voice message 00:${recordingSeconds.toString().padStart(2, '0')}", color = MaterialTheme.colorScheme.error)
+                }
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -434,7 +477,9 @@ fun ChatScreen(
                 IconButton(
                     onClick = {
                         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                            cameraLauncher.launch(null)
+                            val file = File(context.cacheDir, "photo_${System.currentTimeMillis()}.jpg")
+                            cameraFile = file
+                            cameraLauncher.launch(FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file))
                         } else {
                             cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                         }
@@ -518,6 +563,7 @@ fun ChatScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Status: ${otherUserStatus.lowercase(Locale.ROOT)}")
                     if (otherUserUsername.isNotBlank()) Text("Username: @$otherUserUsername")
+                    if (!otherUserBio.isNullOrBlank()) Text(otherUserBio!!)
                 }
             },
             confirmButton = { TextButton(onClick = { showChatDetails = false }) { Text("Close") } }
@@ -794,6 +840,12 @@ fun AttachmentCard(
     val cardColor = if (isOwnMessage) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
                     else MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
     val contentColor = if (isOwnMessage) Color.White else MaterialTheme.colorScheme.onSurface
+    var isPlaying by remember(message.id) { mutableStateOf(false) }
+    var playerReady by remember(message.id) { mutableStateOf(false) }
+    val player = remember(message.id) { MediaPlayer() }
+    DisposableEffect(message.id) {
+        onDispose { player.release() }
+    }
 
     Card(
         modifier = Modifier
@@ -811,20 +863,30 @@ fun AttachmentCard(
                         }
                         val mimeType = message.attachmentFileType ?: "application/octet-stream"
                         val uri = android.net.Uri.parse(fullUrl)
-                        
-                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-                            setDataAndType(uri, mimeType)
-                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        }
-                        
-                        try {
+                        if (message.messageType == "VOICE") {
+                            if (isPlaying) {
+                                player.pause()
+                                isPlaying = false
+                            } else if (playerReady) {
+                                player.start()
+                                isPlaying = true
+                            } else {
+                                player.reset()
+                                player.setDataSource(context, uri)
+                                player.setOnPreparedListener {
+                                    playerReady = true
+                                    player.start()
+                                    isPlaying = true
+                                }
+                                player.setOnCompletionListener { isPlaying = false }
+                                player.prepareAsync()
+                            }
+                        } else {
+                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                                setDataAndType(uri, mimeType)
+                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
                             context.startActivity(intent)
-                        } catch (e: Exception) {
-                            val browserIntent = android.content.Intent(
-                                android.content.Intent.ACTION_VIEW,
-                                uri
-                            )
-                            context.startActivity(browserIntent)
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
@@ -841,7 +903,7 @@ fun AttachmentCard(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Icon(
-                imageVector = Icons.Default.AttachFile,
+                imageVector = if (message.messageType == "VOICE" && isPlaying) Icons.Default.Pause else if (message.messageType == "VOICE") Icons.Default.PlayArrow else Icons.Default.AttachFile,
                 contentDescription = "File Icon",
                 tint = contentColor,
                 modifier = Modifier.size(32.dp)
@@ -872,7 +934,7 @@ fun AttachmentCard(
                     "${message.attachmentFileName ?: ""} • $sizeText"
                 }
                 Text(
-                    text = secondaryText,
+                    text = if (message.messageType == "VOICE" && !playerReady) "Loading audio..." else if (message.messageType == "VOICE" && isPlaying) "Playing voice message" else secondaryText,
                     fontSize = 11.sp,
                     color = contentColor.copy(alpha = 0.7f),
                     maxLines = 1,

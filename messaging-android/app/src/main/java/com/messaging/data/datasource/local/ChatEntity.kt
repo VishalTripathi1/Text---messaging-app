@@ -12,6 +12,7 @@ data class ChatEntity(
     val otherUserId: Long?,
     val otherUsername: String?,
     val otherDisplayName: String?,
+    val otherBio: String?,
     val otherProfilePictureUrl: String?,
     val otherStatus: String?,
     val lastMessageText: String?,

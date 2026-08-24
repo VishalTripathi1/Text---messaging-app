@@ -3,7 +3,9 @@ package com.messaging.presentation.screen.profile
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.net.Uri
+import androidx.exifinterface.media.ExifInterface
 import java.io.ByteArrayOutputStream
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -75,17 +77,33 @@ class ProfileViewModel @Inject constructor(
     fun uploadProfilePicture(context: Context, uri: Uri, onUploaded: (String) -> Unit) {
         viewModelScope.launch {
             runCatching {
-                context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+                val orientation = context.contentResolver.openFileDescriptor(uri, "r")?.use {
+                    ExifInterface(it.fileDescriptor).getAttributeInt(
+                        ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL
+                    )
+                } ?: ExifInterface.ORIENTATION_NORMAL
+                val source = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
                     ?: throw IllegalStateException("Unable to read selected image")
-            }.mapCatching { source ->
-                val scale = minOf(1f, 512f / maxOf(source.width, source.height).toFloat())
+                source to orientation
+            }.mapCatching { (source, orientation) ->
+                val matrix = Matrix()
+                when (orientation) {
+                    ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+                    ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+                    ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+                    ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
+                    ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
+                }
+                val oriented = Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+                val scale = minOf(1f, 512f / maxOf(oriented.width, oriented.height).toFloat())
                 val resized = if (scale < 1f) Bitmap.createScaledBitmap(
-                    source, (source.width * scale).toInt(), (source.height * scale).toInt(), true
-                ) else source
+                    oriented, (oriented.width * scale).toInt(), (oriented.height * scale).toInt(), true
+                ) else oriented
                 val compressed = ByteArrayOutputStream().also { output ->
                     resized.compress(Bitmap.CompressFormat.JPEG, 80, output)
                 }.toByteArray()
-                if (resized !== source) resized.recycle()
+                if (resized !== oriented) resized.recycle()
+                if (oriented !== source) oriented.recycle()
                 if (source.isRecycled.not()) source.recycle()
                 userRepository.uploadProfilePicture(compressed, "profile.jpg", "image/jpeg").getOrThrow()
             }.onSuccess(onUploaded)

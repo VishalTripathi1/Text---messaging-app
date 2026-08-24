@@ -61,7 +61,10 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) throws Exception {
         Long userId = (Long) session.getAttributes().get("userId");
         if (userId != null) {
-            userSessions.remove(userId);
+            boolean wasCurrentSession = userSessions.remove(userId, session);
+            if (!wasCurrentSession) {
+                return;
+            }
             log.info("User {} disconnected from WebSockets. Total sessions: {}", userId, userSessions.size());
             
             updateUserStatus(userId, UserProfile.UserStatus.OFFLINE);

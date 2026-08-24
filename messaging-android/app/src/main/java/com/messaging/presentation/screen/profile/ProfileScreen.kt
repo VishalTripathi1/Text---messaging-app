@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -53,6 +54,7 @@ fun ProfileScreen(
         if (uri != null) {
             viewModel.uploadProfilePicture(context, uri) { path ->
                 profilePictureUrl = if (path.startsWith("http")) path else Constants.ATTACHMENT_BASE_URL + path
+                viewModel.saveProfile(displayName, bio, profilePictureUrl)
             }
         }
     }
@@ -156,7 +158,8 @@ fun ProfileScreen(
                                     AsyncImage(
                                         model = profilePictureUrl,
                                         contentDescription = "Profile picture",
-                                        modifier = Modifier.fillMaxSize()
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Crop
                                     )
                                 } else {
                                     val initial = (profile?.displayName ?: profile?.username ?: "?")
@@ -260,33 +263,6 @@ fun ProfileScreen(
                                     color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
                                 )
                             },
-                            shape = RoundedCornerShape(12.dp)
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Text(
-                            text = "PROFILE PICTURE",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary,
-                            letterSpacing = 1.5.sp
-                        )
-
-                        OutlinedTextField(
-                            value = profilePictureUrl,
-                            onValueChange = { profilePictureUrl = it },
-                            label = { Text("Profile Picture URL") },
-                            leadingIcon = {
-                                Icon(
-                                    Icons.Default.AccountCircle,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                            },
-                            placeholder = { Text("https://example.com/avatar.png") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
                             shape = RoundedCornerShape(12.dp)
                         )
 

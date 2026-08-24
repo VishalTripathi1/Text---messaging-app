@@ -57,6 +57,9 @@ class ChatViewModel @Inject constructor(
     private val _otherUserUsername = MutableStateFlow("")
     val otherUserUsername: StateFlow<String> = _otherUserUsername
 
+    private val _otherUserBio = MutableStateFlow<String?>(null)
+    val otherUserBio: StateFlow<String?> = _otherUserBio
+
     private val _isPeerTyping = MutableStateFlow(false)
     val isPeerTyping: StateFlow<Boolean> = _isPeerTyping
 
@@ -122,6 +125,7 @@ class ChatViewModel @Inject constructor(
                     _otherUserStatus.value = chat.otherStatus ?: "OFFLINE"
                     _otherUserProfilePictureUrl.value = chat.otherProfilePictureUrl
                     _otherUserUsername.value = chat.otherUsername ?: ""
+                    _otherUserBio.value = chat.otherBio
                     
                     launch {
                         webSocketClient.incomingMessages
@@ -218,6 +222,10 @@ class ChatViewModel @Inject constructor(
                     .collect { chat ->
                         if (chat != null && !chat.isGroup) {
                             _otherUserStatus.value = chat.otherStatus ?: "OFFLINE"
+                            _otherUserProfilePictureUrl.value = chat.otherProfilePictureUrl
+                            _otherUserUsername.value = chat.otherUsername ?: ""
+                            _otherUserBio.value = chat.otherBio
+                            _otherUserDisplayName.value = chat.otherDisplayName ?: ""
                         }
                     }
             }

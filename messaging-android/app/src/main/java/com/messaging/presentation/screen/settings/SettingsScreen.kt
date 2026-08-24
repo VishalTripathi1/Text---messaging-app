@@ -16,12 +16,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.navigation.NavController
 import com.messaging.presentation.navigation.Screen
+import coil.compose.AsyncImage
+import com.messaging.util.Constants
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -39,6 +45,15 @@ fun SettingsScreen(
 
     var showThemeDialog by remember { mutableStateOf(false) }
     var showLogoutDialog by remember { mutableStateOf(false) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.loadAll()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -120,14 +135,19 @@ fun SettingsScreen(
                                     .background(MaterialTheme.colorScheme.primaryContainer),
                                 contentAlignment = Alignment.Center
                             ) {
-                                val initial = (profile?.displayName ?: profile?.username ?: "?")
-                                    .firstOrNull()?.uppercaseChar() ?: '?'
-                                Text(
-                                    text = initial.toString(),
-                                    fontSize = 26.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
+                                val imagePath = profile?.profilePictureUrl
+                                if (!imagePath.isNullOrBlank()) {
+                                    AsyncImage(
+                                        model = if (imagePath.startsWith("http")) imagePath else Constants.ATTACHMENT_BASE_URL + imagePath,
+                                        contentDescription = "Profile picture",
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                } else {
+                                    val initial = (profile?.displayName ?: profile?.username ?: "?")
+                                        .firstOrNull()?.uppercaseChar() ?: '?'
+                                    Text(initial.toString(), fontSize = 26.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                }
                             }
 
                             Spacer(modifier = Modifier.width(16.dp))
