@@ -26,6 +26,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.navigation.NavController
 import com.messaging.presentation.navigation.Screen
+import com.messaging.presentation.screen.chat.ProfileAvatar
 import coil.compose.AsyncImage
 import com.messaging.util.Constants
 
@@ -117,7 +118,7 @@ fun SettingsScreen(
                             .fillMaxWidth()
                             .padding(vertical = 12.dp)
                             .clickable { navController.navigate(Screen.Profile.route) },
-                        shape = RoundedCornerShape(16.dp),
+                        shape = RoundedCornerShape(12.dp),
                         colors = CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                         )
@@ -135,19 +136,7 @@ fun SettingsScreen(
                                     .background(MaterialTheme.colorScheme.primaryContainer),
                                 contentAlignment = Alignment.Center
                             ) {
-                                val imagePath = profile?.profilePictureUrl
-                                if (!imagePath.isNullOrBlank()) {
-                                    AsyncImage(
-                                        model = if (imagePath.startsWith("http")) imagePath else Constants.ATTACHMENT_BASE_URL + imagePath,
-                                        contentDescription = "Profile picture",
-                                        modifier = Modifier.fillMaxSize(),
-                                        contentScale = ContentScale.Crop
-                                    )
-                                } else {
-                                    val initial = (profile?.displayName ?: profile?.username ?: "?")
-                                        .firstOrNull()?.uppercaseChar() ?: '?'
-                                    Text(initial.toString(), fontSize = 26.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                                }
+                                ProfileAvatar(profile?.profilePictureUrl, Modifier.fillMaxSize())
                             }
 
                             Spacer(modifier = Modifier.width(16.dp))

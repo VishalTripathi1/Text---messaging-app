@@ -15,6 +15,7 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -72,12 +73,28 @@ fun ChatListScreen(
         }
     }
     val currentUserId by viewModel.currentUserId.collectAsState()
+    var searchQuery by remember { mutableStateOf("") }
+    var isSearchVisible by remember { mutableStateOf(false) }
+    var selectedFilter by remember { mutableStateOf("All") }
 
     val sortedChats = remember(chats) {
         chats.sortedWith(
             compareByDescending<Chat> { it.isPinned }
                 .thenByDescending { it.lastMessageAt ?: 0L }
         )
+    }
+    val visibleChats = remember(sortedChats, searchQuery, selectedFilter) {
+        sortedChats.filter { chat ->
+            val name = if (chat.isGroup) chat.groupName.orEmpty() else chat.otherUser?.displayName.orEmpty()
+            val matchesSearch = searchQuery.isBlank() || name.contains(searchQuery, ignoreCase = true) ||
+                chat.lastMessageText.orEmpty().contains(searchQuery, ignoreCase = true)
+            val matchesFilter = when (selectedFilter) {
+                "Unread" -> chat.unreadCount > 0
+                "Groups" -> chat.isGroup
+                else -> true
+            }
+            matchesSearch && matchesFilter
+        }
     }
 
     Scaffold(
@@ -87,28 +104,23 @@ fun ChatListScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             text = "Chats",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 24.sp
+                            style = MaterialTheme.typography.headlineLarge
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Box(
-                            modifier = Modifier
-                                .size(10.dp)
-                                .clip(CircleShape)
-                                .background(if (isConnected) Color(0xFF4CAF50) else Color(0xFFFF9800))
-                        )
+                        Text(if (isConnected) "Live" else "Offline", style = MaterialTheme.typography.labelMedium, color = if (isConnected) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 },
                 actions = {
-                    IconButton(onClick = { navController.navigate(Screen.Search.route) }) {
-                        Icon(imageVector = Icons.Default.Search, contentDescription = "Search Users")
+                    IconButton(onClick = { isSearchVisible = !isSearchVisible }) {
+                        Icon(imageVector = if (isSearchVisible) Icons.Default.Close else Icons.Default.Search, contentDescription = "Search conversations")
                     }
                     IconButton(onClick = { navController.navigate(Screen.Settings.route) }) {
                         Icon(imageVector = Icons.Default.Settings, contentDescription = "Settings")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background
+                    containerColor = MaterialTheme.colorScheme.background,
+                    scrolledContainerColor = MaterialTheme.colorScheme.background
                 )
             )
         },
@@ -129,22 +141,47 @@ fun ChatListScreen(
                 .padding(paddingValues)
                 .background(MaterialTheme.colorScheme.background)
         ) {
-            if (sortedChats.isEmpty()) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                if (isSearchVisible) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        placeholder = { Text("Search conversations") },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                        trailingIcon = if (searchQuery.isNotEmpty()) ({ IconButton(onClick = { searchQuery = "" }) { Icon(Icons.Default.Close, contentDescription = "Clear search") } }) else null,
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+                    )
+                }
+                Row(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("All", "Unread", "Groups").forEach { filter ->
+                        FilterChip(
+                            selected = selectedFilter == filter,
+                            onClick = { selectedFilter = filter },
+                            label = { Text(filter) },
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                    }
+                }
+                if (visibleChats.isEmpty()) {
                 Box(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().weight(1f),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "No active chats yet. Start one by clicking '+'!",
+                        text = if (searchQuery.isBlank()) "Your inbox is quiet" else "No conversations found",
                         color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
-                        fontSize = 16.sp
+                        style = MaterialTheme.typography.bodyLarge
                     )
                 }
-            } else {
+                } else {
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize().weight(1f),
+                    contentPadding = PaddingValues(top = 8.dp, bottom = 80.dp)
                 ) {
-                    items(sortedChats) { chat ->
+                    items(visibleChats, key = { it.id }) { chat ->
                         ChatItem(
                             chat = chat,
                             currentUserId = currentUserId,
@@ -159,11 +196,12 @@ fun ChatListScreen(
                             }
                         )
                         Divider(
-                            modifier = Modifier.padding(horizontal = 16.dp),
+                            modifier = Modifier.padding(start = 84.dp, end = 16.dp),
                             thickness = 0.5.dp,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
                         )
                     }
+                }
                 }
             }
         }
@@ -204,13 +242,8 @@ fun ChatItem(
                 contentAlignment = Alignment.Center
             ) {
                 val imagePath = chat.otherUser?.profilePictureUrl
-                if (!chat.isGroup && !imagePath.isNullOrBlank()) {
-                    AsyncImage(
-                        model = if (imagePath.startsWith("http")) imagePath else Constants.ATTACHMENT_BASE_URL + imagePath,
-                        contentDescription = "Profile picture",
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
-                    )
+                if (!chat.isGroup) {
+                    ProfileAvatar(imagePath, Modifier.fillMaxSize())
                 } else {
                     val initials = if (chat.isGroup) {
                         chat.groupName?.take(2)?.uppercase() ?: "GP"
@@ -224,24 +257,6 @@ fun ChatItem(
                         fontWeight = FontWeight.Bold,
                         fontSize = 18.sp
                     )
-                }
-                if (!chat.isGroup && chat.otherUser?.status == "ONLINE") {
-                    Box(
-                        modifier = Modifier
-                            .size(12.dp)
-                            .clip(CircleShape)
-                            .align(Alignment.BottomEnd)
-                            .padding(2.dp)
-                            .background(MaterialTheme.colorScheme.background),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .clip(CircleShape)
-                                .background(Color(0xFF4CAF50))
-                        )
-                    }
                 }
             }
 
@@ -304,7 +319,7 @@ fun ChatItem(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         val isOwnLastMessage = chat.lastMessageSenderId == currentUserId && currentUserId > 0
-                        if (isOwnLastMessage && !chat.lastMessageText.isNullOrBlank()) {
+                        if (isOwnLastMessage && !chat.lastMessageText.isNullOrBlank() && chat.lastMessageStatus != null) {
                             val status = chat.lastMessageStatus ?: "SENT"
                             val tintColor = if (status == "READ") Color(0xFF06B6D4) else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
                             when (status) {

@@ -6,13 +6,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 
 private val DarkColorScheme = darkColorScheme(
     primary = PrimaryColor,
     onPrimary = androidx.compose.ui.graphics.Color.White,
-    primaryContainer = PrimaryVariant,
-    onPrimaryContainer = androidx.compose.ui.graphics.Color.White,
+    primaryContainer = Color(0xFF27483F),
+    onPrimaryContainer = Color(0xFFD7EEE5),
     secondary = SecondaryColor,
     onSecondary = androidx.compose.ui.graphics.Color.White,
     tertiary = TertiaryColor,
@@ -25,14 +26,14 @@ private val DarkColorScheme = darkColorScheme(
     onSurface = TextPrimaryDark,
     surfaceVariant = SurfaceVariantDark,
     onSurfaceVariant = TextSecondaryDark,
-    outline = SurfaceVariantDark
+    outline = OutlineDark
 )
 
 private val LightColorScheme = lightColorScheme(
     primary = PrimaryColor,
     onPrimary = androidx.compose.ui.graphics.Color.White,
-    primaryContainer = SurfaceVariantLight,
-    onPrimaryContainer = PrimaryVariant,
+    primaryContainer = Color(0xFFD7E8E0),
+    onPrimaryContainer = Color(0xFF0C3028),
     secondary = SecondaryColor,
     onSecondary = androidx.compose.ui.graphics.Color.White,
     tertiary = TertiaryColor,
@@ -45,7 +46,7 @@ private val LightColorScheme = lightColorScheme(
     onSurface = TextPrimaryLight,
     surfaceVariant = SurfaceVariantLight,
     onSurfaceVariant = TextSecondaryLight,
-    outline = SurfaceVariantLight
+    outline = OutlineLight
 )
 
 @Composable

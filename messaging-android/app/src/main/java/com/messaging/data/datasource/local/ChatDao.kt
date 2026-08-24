@@ -60,6 +60,9 @@ interface ChatDao {
     )
     fun updateLastMessageOnly(chatId: Long, text: String?, senderId: Long?, at: Long)
 
+    @Query("UPDATE chats SET lastMessageText = 'This message was deleted', lastMessageStatus = NULL WHERE id = :chatId AND lastMessageSenderId = :senderId")
+    fun markLastMessageDeleted(chatId: Long, senderId: Long)
+
     /**
      * Bumps the unread badge without touching the last-message preview.
      *

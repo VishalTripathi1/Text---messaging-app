@@ -138,7 +138,11 @@ fun ChatResponse.toEntity(): ChatEntity {
         otherStatus = otherUser.status ?: "OFFLINE",
         lastMessageText = previewText,
         lastMessageSenderId = lastMessage?.senderId,
-        lastMessageStatus = lastMessage?.deliveryStatus ?: "SENT",
+        lastMessageStatus = if (lastMessage?.messageText == "This message was deleted") {
+            null
+        } else {
+            lastMessage?.deliveryStatus ?: "SENT"
+        },
         lastMessageAt = lastMessage?.createdAt?.toEpochMillis(),
         isPinned = isPinned,
         isArchived = isArchived,

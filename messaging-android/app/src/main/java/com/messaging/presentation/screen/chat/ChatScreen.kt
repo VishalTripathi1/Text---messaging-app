@@ -9,7 +9,9 @@ import android.media.MediaRecorder
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
+import android.provider.MediaStore
 import android.util.Log
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.exifinterface.media.ExifInterface
@@ -41,16 +43,22 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.navigation.NavController
 import com.messaging.domain.entity.Message
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.debounce
 import java.text.SimpleDateFormat
 import java.io.File
 import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.*
 import coil.compose.AsyncImage
 import com.messaging.util.Constants
@@ -76,6 +84,49 @@ fun formatFileSize(bytes: Long): String {
     }
 }
 
+private suspend fun saveAttachmentToDevice(
+    context: android.content.Context,
+    url: String,
+    fileName: String,
+    mimeType: String,
+    accessToken: String?
+): Result<Uri> = withContext(Dispatchers.IO) {
+    runCatching {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 30_000
+            readTimeout = 60_000
+            accessToken?.let { setRequestProperty("Authorization", "Bearer $it") }
+        }
+        connection.connect()
+        if (connection.responseCode !in 200..299) throw IllegalStateException("Download failed (${connection.responseCode})")
+        val resolver = context.contentResolver
+        val values = android.content.ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, fileName.ifBlank { "attachment" })
+            put(MediaStore.Downloads.MIME_TYPE, mimeType)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val target = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: throw IllegalStateException("Unable to create download")
+        } else {
+            throw IllegalStateException("Downloads require Android 10 or newer")
+        }
+        try {
+            resolver.openOutputStream(target)?.use { output -> connection.inputStream.use { it.copyTo(output) } }
+                ?: throw IllegalStateException("Unable to open download")
+            values.clear()
+            values.put(MediaStore.Downloads.IS_PENDING, 0)
+            resolver.update(target, values, null, null)
+            target
+        } catch (t: Throwable) {
+            resolver.delete(target, null, null)
+            throw t
+        } finally {
+            connection.disconnect()
+        }
+    }
+}
+
 /**
  * A file the user has picked but not yet sent - lets them review/remove it before it goes out.
  */
@@ -85,6 +136,39 @@ data class PendingAttachment(
     val mimeType: String,
     val messageType: String
 )
+
+@Composable
+fun DefaultAvatar(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = Icons.Default.Person,
+            contentDescription = "Default profile picture",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxSize(0.62f)
+        )
+    }
+}
+
+@Composable
+fun ProfileAvatar(imagePath: String?, modifier: Modifier) {
+    var imageFailed by remember(imagePath) { mutableStateOf(false) }
+    if (!imagePath.isNullOrBlank() && !imageFailed) {
+        AsyncImage(
+            model = if (imagePath.startsWith("http")) imagePath else Constants.ATTACHMENT_BASE_URL + imagePath,
+            contentDescription = "Profile picture",
+            modifier = modifier.clip(CircleShape),
+            contentScale = ContentScale.Crop,
+            onError = { imageFailed = true }
+        )
+    } else {
+        DefaultAvatar(modifier)
+    }
+}
 
 /**
  * ChatScreen - Renders a conversation list of bubbles with double ticks, attachments, typing state, reactions, and search
@@ -108,8 +192,7 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val context = LocalContext.current
 
-    var isSearchActive by remember { mutableStateOf(false) }
-    var searchQuery by remember { mutableStateOf("") }
+    val searchQuery = ""
 
     // See the identical fix + rationale in ChatListScreen.kt - without this, reopening an
     // already-composed chat screen (app backgrounded/resumed, or screen unlocked) never
@@ -150,6 +233,7 @@ fun ChatScreen(
     // so the user can review it - and remove it via the "x" button - before it's actually sent.
     var pendingAttachment by remember { mutableStateOf<PendingAttachment?>(null) }
     var showChatDetails by remember { mutableStateOf(false) }
+    var showLargeProfilePhoto by remember { mutableStateOf(false) }
     var isRecording by remember { mutableStateOf(false) }
     var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
     var recordingFile by remember { mutableStateOf<File?>(null) }
@@ -296,36 +380,14 @@ fun ChatScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    if (isSearchActive) {
-                        TextField(
-                            value = searchQuery,
-                            onValueChange = { searchQuery = it },
-                            placeholder = { Text("Search messages...") },
-                            singleLine = true,
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor = Color.Transparent,
-                                unfocusedContainerColor = Color.Transparent
-                            ),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    } else {
+                    run {
                         Column {
                             Row(
                                 modifier = Modifier.clickable { showChatDetails = true },
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                if (!otherUserProfilePictureUrl.isNullOrBlank()) {
-                                    AsyncImage(
-                                        model = otherUserProfilePictureUrl!!.let { if (it.startsWith("http")) it else Constants.ATTACHMENT_BASE_URL + it },
-                                        contentDescription = "Profile picture",
-                                        modifier = Modifier.size(36.dp).clip(CircleShape),
-                                        contentScale = ContentScale.Crop
-                                    )
-                                } else {
-                                    Box(
-                                        modifier = Modifier.size(36.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
-                                        contentAlignment = Alignment.Center
-                                    ) { Text(otherUserDisplayName.firstOrNull()?.uppercase() ?: "?", fontWeight = FontWeight.Bold) }
+                                Box(modifier = Modifier.clickable { showLargeProfilePhoto = true }) {
+                                    ProfileAvatar(otherUserProfilePictureUrl, Modifier.size(36.dp))
                                 }
                                 Spacer(Modifier.width(10.dp))
                                 Column {
@@ -354,22 +416,10 @@ fun ChatScreen(
                         Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back")
                     }
                 },
-                actions = {
-                    if (isSearchActive) {
-                        IconButton(onClick = {
-                            isSearchActive = false
-                            searchQuery = ""
-                        }) {
-                            Icon(imageVector = Icons.Default.Close, contentDescription = "Close Search")
-                        }
-                    } else {
-                        IconButton(onClick = { isSearchActive = true }) {
-                            Icon(imageVector = Icons.Default.Search, contentDescription = "Search Messages")
-                        }
-                    }
-                },
+                actions = {},
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    titleContentColor = MaterialTheme.colorScheme.onSurface
                 )
             )
         }
@@ -465,7 +515,10 @@ fun ChatScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(8.dp)
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(horizontal = 4.dp, vertical = 2.dp)
                     .imePadding(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -515,7 +568,7 @@ fun ChatScreen(
                     placeholder = { Text("Type a message...") },
                     modifier = Modifier
                         .weight(1f)
-                        .clip(RoundedCornerShape(24.dp)),
+                        .clip(RoundedCornerShape(14.dp)),
                     colors = TextFieldDefaults.colors(
                         focusedIndicatorColor = Color.Transparent,
                         unfocusedIndicatorColor = Color.Transparent
@@ -571,6 +624,22 @@ fun ChatScreen(
             confirmButton = { TextButton(onClick = { showChatDetails = false }) { Text("Close") } }
         )
     }
+
+    if (showLargeProfilePhoto && !otherUserProfilePictureUrl.isNullOrBlank()) {
+        Dialog(onDismissRequest = { showLargeProfilePhoto = false }) {
+            Surface(
+                color = Color.Black,
+                modifier = Modifier.fillMaxWidth().fillMaxHeight(0.75f)
+            ) {
+                AsyncImage(
+                    model = if (otherUserProfilePictureUrl!!.startsWith("http")) otherUserProfilePictureUrl else Constants.ATTACHMENT_BASE_URL + otherUserProfilePictureUrl,
+                    contentDescription = "Profile picture",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit
+                )
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -586,8 +655,8 @@ fun MessageBubble(
 ) {
     val myCurrentReaction = message.reactions?.firstOrNull { it.userId == currentUserId }?.reaction
     val align = if (isOwnMessage) Alignment.End else Alignment.Start
-    val bubbleColor = if (isOwnMessage) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
-    val textColor = if (isOwnMessage) Color.White else MaterialTheme.colorScheme.onSurface
+    val bubbleColor = if (isOwnMessage) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+    val textColor = if (isOwnMessage) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
 
     var showOptions by remember { mutableStateOf(false) }
     var showEditDialog by remember { mutableStateOf(false) }
@@ -613,7 +682,7 @@ fun MessageBubble(
                     onLongClick = { showOptions = true }
                 )
                 .padding(horizontal = 12.dp, vertical = 8.dp)
-                .widthIn(max = 280.dp)
+            .widthIn(max = 320.dp)
         ) {
             Column {
                 if (message.attachmentPath != null) {
@@ -678,7 +747,7 @@ fun MessageBubble(
                         fontSize = 10.sp,
                         color = textColor.copy(alpha = 0.6f)
                     )
-                    if (isOwnMessage) {
+                    if (isOwnMessage && !message.isDeleted) {
                         Spacer(modifier = Modifier.width(4.dp))
                         when (message.deliveryStatus) {
                             "PENDING" -> {
@@ -782,6 +851,8 @@ fun MessageBubble(
                         ) {
                             Text("Edit Message")
                         }
+                    }
+                    if (isOwnMessage && !message.isDeleted) {
                         Button(
                             onClick = {
                                 onDelete()
@@ -789,9 +860,7 @@ fun MessageBubble(
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                             modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Delete Message")
-                        }
+                        ) { Text("Delete Message") }
                     }
                 }
             },
@@ -842,14 +911,26 @@ fun AttachmentCard(
     onLongClick: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var showPhotoPreview by remember(message.id) { mutableStateOf(false) }
+    var isDownloading by remember(message.id) { mutableStateOf(false) }
     val cardColor = if (isOwnMessage) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
                     else MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
     val contentColor = if (isOwnMessage) Color.White else MaterialTheme.colorScheme.onSurface
     var isPlaying by remember(message.id) { mutableStateOf(false) }
     var playerReady by remember(message.id) { mutableStateOf(false) }
+    var playbackPosition by remember(message.id) { mutableStateOf(0L) }
+    var playbackDuration by remember(message.id) { mutableStateOf(0L) }
     val player = remember(message.id) { MediaPlayer() }
     DisposableEffect(message.id) {
         onDispose { player.release() }
+    }
+    LaunchedEffect(isPlaying, playerReady) {
+        while (isPlaying && playerReady) {
+            playbackPosition = player.currentPosition.toLong()
+            playbackDuration = player.duration.toLong().coerceAtLeast(1L)
+            delay(100)
+        }
     }
 
     Card(
@@ -868,7 +949,9 @@ fun AttachmentCard(
                         }
                         val mimeType = message.attachmentFileType ?: "application/octet-stream"
                         val uri = android.net.Uri.parse(fullUrl)
-                        if (message.messageType == "VOICE") {
+                        if (message.messageType == "IMAGE") {
+                            showPhotoPreview = true
+                        } else if (message.messageType == "VOICE") {
                             if (isPlaying) {
                                 player.pause()
                                 isPlaying = false
@@ -881,6 +964,7 @@ fun AttachmentCard(
                                 player.setDataSource(context, uri, headers)
                                 player.setOnPreparedListener {
                                     playerReady = true
+                                    playbackDuration = it.duration.toLong().coerceAtLeast(1L)
                                     player.start()
                                     isPlaying = true
                                 }
@@ -933,6 +1017,24 @@ fun AttachmentCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                if (message.messageType == "VOICE") {
+                    val safeDuration = playbackDuration.toFloat().coerceAtLeast(1f)
+                    Slider(
+                        value = playbackPosition.toFloat().coerceIn(0f, safeDuration),
+                        onValueChange = { playbackPosition = it.toLong() },
+                        onValueChangeFinished = {
+                            if (playerReady) player.seekTo(playbackPosition.toInt())
+                        },
+                        valueRange = 0f..safeDuration,
+                        enabled = playerReady,
+                        modifier = Modifier.fillMaxWidth().height(24.dp),
+                        colors = SliderDefaults.colors(
+                            thumbColor = contentColor,
+                            activeTrackColor = contentColor,
+                            inactiveTrackColor = contentColor.copy(alpha = 0.25f)
+                        )
+                    )
+                }
                 val sizeText = formatFileSize(message.attachmentFileSize ?: 0L)
                 val secondaryText = if (message.messageType == "DOCUMENT") {
                     sizeText
@@ -940,7 +1042,7 @@ fun AttachmentCard(
                     "${message.attachmentFileName ?: ""} • $sizeText"
                 }
                 Text(
-                    text = if (message.messageType == "VOICE" && !playerReady) "Loading audio..." else if (message.messageType == "VOICE" && isPlaying) "Playing voice message" else secondaryText,
+                    text = if (message.messageType == "VOICE" && isPlaying) "Playing voice message" else if (message.messageType == "VOICE") "Tap to play" else secondaryText,
                     fontSize = 11.sp,
                     color = contentColor.copy(alpha = 0.7f),
                     maxLines = 1,
@@ -948,12 +1050,53 @@ fun AttachmentCard(
                 )
             }
 
-            Icon(
-                imageVector = Icons.Default.Download,
-                contentDescription = "Download File",
-                tint = contentColor,
-                modifier = Modifier.size(20.dp)
-            )
+            IconButton(
+                onClick = {
+                    if (!isDownloading) {
+                        isDownloading = true
+                        scope.launch {
+                            val result = saveAttachmentToDevice(context, fullAttachmentUrl(message), message.attachmentFileName ?: "attachment", message.attachmentFileType ?: "application/octet-stream", accessToken)
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(
+                                    context,
+                                    if (result.isSuccess) "Saved to Downloads" else "Download failed",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                            isDownloading = false
+                        }
+                    }
+                },
+                enabled = !isDownloading
+            ) {
+                Icon(
+                    imageVector = if (isDownloading) Icons.Default.HourglassTop else Icons.Default.Download,
+                    contentDescription = "Download File",
+                    tint = contentColor
+                )
+            }
         }
     }
+
+    if (showPhotoPreview) {
+        AlertDialog(
+            onDismissRequest = { showPhotoPreview = false },
+            text = {
+                AsyncImage(
+                    model = fullAttachmentUrl(message),
+                    contentDescription = "Photo",
+                    modifier = Modifier.fillMaxWidth(),
+                    contentScale = ContentScale.Fit
+                )
+            },
+            confirmButton = { TextButton(onClick = { showPhotoPreview = false }) { Text("Close") } }
+        )
+    }
+}
+
+private fun fullAttachmentUrl(message: Message): String {
+    val rawPath = message.attachmentPath ?: ""
+    if (rawPath.startsWith("http")) return rawPath
+    val path = if (rawPath.startsWith("/")) rawPath else "/$rawPath"
+    return "${Constants.ATTACHMENT_BASE_URL}$path"
 }

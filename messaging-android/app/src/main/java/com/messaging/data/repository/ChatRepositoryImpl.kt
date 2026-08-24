@@ -818,6 +818,15 @@ class ChatRepositoryImpl @Inject constructor(
                                     at = response.createdAt.toEpochMillis()
                                 )
                             }
+                        } else if (chat != null && response.isDeleted) {
+                            val latest = if (groupId != null) {
+                                messageDao.getLatestMessageForGroup(groupId)
+                            } else {
+                                messageDao.getLatestMessageForChat(resolvedChatId)
+                            }
+                            if (latest?.id == response.id) {
+                                chatDao.markLastMessageDeleted(resolvedChatId, response.senderId)
+                            }
                         } else if (chat != null && isIncomingEdit) {
                             // The server has already dropped this reader's read receipt for the
                             // message (see MessageServiceImpl.editMessage), which is what makes it
@@ -1071,14 +1080,21 @@ class ChatRepositoryImpl @Inject constructor(
             if (msgEntity?.chatId != null) {
                 val chat = chatDao.getChatById(msgEntity.chatId)
                 if (chat != null) {
-                    chatDao.insertChat(chat.copy(lastMessageText = "This message was deleted"))
+                    chatDao.markLastMessageDeleted(msgEntity.chatId, msgEntity.senderId)
                 }
+            }
+            if (msgEntity?.groupId != null) {
+                val chatId = -msgEntity.groupId
+                val chat = chatDao.getChatById(chatId)
+                if (chat != null) chatDao.markLastMessageDeleted(chatId, msgEntity.senderId)
             }
             if (messageId > 0) {
                 val response = chatApiService.deleteMessage(messageId)
                 val body = response.body()
                 if (response.isSuccessful && body != null) {
-                    messageDao.insertMessage(keepBestStatus(body.toEntity(body.deliveryStatus ?: "SENT")))
+                    messageDao.insertMessage(body.toEntity("SENT"))
+                    if (body.chatId != null) chatDao.markLastMessageDeleted(body.chatId, body.senderId)
+                    if (body.groupId != null) chatDao.markLastMessageDeleted(-body.groupId, body.senderId)
                 }
             }
             Result.success(Unit)

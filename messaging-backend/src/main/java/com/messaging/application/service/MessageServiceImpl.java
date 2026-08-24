@@ -806,7 +806,9 @@ public class MessageServiceImpl implements MessageService {
         // Retain the message row as a deletion placeholder but remove its attachment metadata so
         // neither client can expose a deleted file through an old cached response.
         attachmentRepository.deleteAll(attachmentRepository.findByMessageId(messageId));
-        return mapToMessageResponse(messageRepository.save(message));
+        MessageResponse response = mapToMessageResponse(messageRepository.save(message));
+        response.setDeliveryStatus(null);
+        return response;
     }
 
     @Override

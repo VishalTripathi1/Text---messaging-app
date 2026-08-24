@@ -17,7 +17,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -30,6 +29,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import coil.compose.AsyncImage
 import com.messaging.util.Constants
+import com.messaging.presentation.screen.chat.ProfileAvatar
 
 /**
  * ProfileScreen - Full profile editing screen with avatar, display name, and bio
@@ -134,14 +134,7 @@ fun ProfileScreen(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(
-                                Brush.verticalGradient(
-                                    listOf(
-                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
-                                        MaterialTheme.colorScheme.background
-                                    )
-                                )
-                            )
+                            .background(MaterialTheme.colorScheme.surface)
                             .padding(vertical = 32.dp),
                         contentAlignment = Alignment.Center
                     ) {
@@ -154,22 +147,10 @@ fun ProfileScreen(
                                     .background(MaterialTheme.colorScheme.primaryContainer),
                                 contentAlignment = Alignment.Center
                             ) {
-                                if (profilePictureUrl.isNotBlank()) {
-                                    AsyncImage(
-                                        model = profilePictureUrl,
-                                        contentDescription = "Profile picture",
-                                        modifier = Modifier.fillMaxSize(),
-                                        contentScale = ContentScale.Crop
-                                    )
+                                if (profilePictureUrl.isBlank()) {
+                                    ProfileAvatar(null, Modifier.fillMaxSize())
                                 } else {
-                                    val initial = (profile?.displayName ?: profile?.username ?: "?")
-                                        .firstOrNull()?.uppercaseChar() ?: '?'
-                                    Text(
-                                        text = initial.toString(),
-                                        fontSize = 40.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                                    )
+                                    ProfileAvatar(profilePictureUrl, Modifier.fillMaxSize())
                                 }
                             }
 
@@ -263,7 +244,7 @@ fun ProfileScreen(
                                     color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
                                 )
                             },
-                            shape = RoundedCornerShape(12.dp)
+                            shape = RoundedCornerShape(10.dp)
                         )
 
                         Spacer(modifier = Modifier.height(8.dp))
