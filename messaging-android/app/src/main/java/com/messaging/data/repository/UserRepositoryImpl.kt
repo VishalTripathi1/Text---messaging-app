@@ -7,6 +7,9 @@ import com.messaging.data.model.request.UserProfileUpdateRequest
 import com.messaging.data.model.request.UserSettingsUpdateRequest
 import com.messaging.data.model.response.UserResponse
 import com.messaging.data.model.response.UserSettingsResponse
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MultipartBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import com.messaging.domain.repository.UserRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -44,6 +47,26 @@ class UserRepositoryImpl @Inject constructor(
             }
         }.onFailure {
             Log.e("UserRepositoryImpl", "Error syncing contacts", it)
+        }
+    }
+
+    override suspend fun uploadProfilePicture(
+        fileBytes: ByteArray,
+        fileName: String,
+        mimeType: String
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val body = fileBytes.toRequestBody(mimeType.toMediaTypeOrNull())
+            val part = MultipartBody.Part.createFormData("file", fileName, body)
+            val response = chatApiService.uploadAttachment(part)
+            if (response.isSuccessful) {
+                response.body()?.get("filePath") as? String
+                    ?: throw Exception("Upload response did not include a file path")
+            } else {
+                throw Exception(parseErrorMessage(response, "Failed to upload profile picture"))
+            }
+        }.onFailure {
+            Log.e("UserRepositoryImpl", "Error uploading profile picture", it)
         }
     }
 

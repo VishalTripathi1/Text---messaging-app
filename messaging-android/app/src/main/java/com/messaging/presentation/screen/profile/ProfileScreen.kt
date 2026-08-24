@@ -1,5 +1,7 @@
 package com.messaging.presentation.screen.profile
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -17,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
@@ -24,6 +27,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
+import coil.compose.AsyncImage
+import com.messaging.util.Constants
 
 /**
  * ProfileScreen - Full profile editing screen with avatar, display name, and bio
@@ -43,6 +48,14 @@ fun ProfileScreen(
     var displayName by remember(profile) { mutableStateOf(profile?.displayName ?: "") }
     var bio by remember(profile) { mutableStateOf(profile?.bio ?: "") }
     var profilePictureUrl by remember(profile) { mutableStateOf(profile?.profilePictureUrl ?: "") }
+    val context = LocalContext.current
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            viewModel.uploadProfilePicture(context, uri) { path ->
+                profilePictureUrl = if (path.startsWith("http")) path else Constants.ATTACHMENT_BASE_URL + path
+            }
+        }
+    }
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -139,14 +152,28 @@ fun ProfileScreen(
                                     .background(MaterialTheme.colorScheme.primaryContainer),
                                 contentAlignment = Alignment.Center
                             ) {
-                                val initial = (profile?.displayName ?: profile?.username ?: "?")
-                                    .firstOrNull()?.uppercaseChar() ?: '?'
-                                Text(
-                                    text = initial.toString(),
-                                    fontSize = 40.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
+                                if (profilePictureUrl.isNotBlank()) {
+                                    AsyncImage(
+                                        model = profilePictureUrl,
+                                        contentDescription = "Profile picture",
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                } else {
+                                    val initial = (profile?.displayName ?: profile?.username ?: "?")
+                                        .firstOrNull()?.uppercaseChar() ?: '?'
+                                    Text(
+                                        text = initial.toString(),
+                                        fontSize = 40.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                }
+                            }
+
+                            TextButton(onClick = { imagePicker.launch("image/*") }) {
+                                Icon(Icons.Default.CameraAlt, contentDescription = null)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Change photo")
                             }
 
                             Spacer(modifier = Modifier.height(12.dp))

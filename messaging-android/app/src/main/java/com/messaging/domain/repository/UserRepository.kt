@@ -11,6 +11,7 @@ import com.messaging.data.model.response.UserSettingsResponse
 interface UserRepository {
     suspend fun getCurrentUser(): Result<UserResponse>
     suspend fun syncContacts(phoneNumbers: List<String>): Result<List<UserResponse>>
+    suspend fun uploadProfilePicture(fileBytes: ByteArray, fileName: String, mimeType: String): Result<String>
     suspend fun updateProfile(displayName: String?, bio: String?, profilePictureUrl: String?): Result<UserResponse>
     suspend fun getSettings(): Result<UserSettingsResponse>
     suspend fun updateSettings(

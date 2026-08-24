@@ -1,5 +1,10 @@
 package com.messaging.presentation.screen.profile
 
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import java.io.ByteArrayOutputStream
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.messaging.data.model.response.UserResponse
@@ -64,6 +69,27 @@ class ProfileViewModel @Inject constructor(
                 }
                 .onFailure { _errorMessage.value = it.message ?: "Failed to update profile" }
             _isSaving.value = false
+        }
+    }
+
+    fun uploadProfilePicture(context: Context, uri: Uri, onUploaded: (String) -> Unit) {
+        viewModelScope.launch {
+            runCatching {
+                context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+                    ?: throw IllegalStateException("Unable to read selected image")
+            }.mapCatching { source ->
+                val scale = minOf(1f, 512f / maxOf(source.width, source.height).toFloat())
+                val resized = if (scale < 1f) Bitmap.createScaledBitmap(
+                    source, (source.width * scale).toInt(), (source.height * scale).toInt(), true
+                ) else source
+                val compressed = ByteArrayOutputStream().also { output ->
+                    resized.compress(Bitmap.CompressFormat.JPEG, 80, output)
+                }.toByteArray()
+                if (resized !== source) resized.recycle()
+                if (source.isRecycled.not()) source.recycle()
+                userRepository.uploadProfilePicture(compressed, "profile.jpg", "image/jpeg").getOrThrow()
+            }.onSuccess(onUploaded)
+                .onFailure { _errorMessage.value = it.message ?: "Failed to upload profile picture" }
         }
     }
 

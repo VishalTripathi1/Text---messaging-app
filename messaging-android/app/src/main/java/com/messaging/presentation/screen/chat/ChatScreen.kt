@@ -1,6 +1,13 @@
 package com.messaging.presentation.screen.chat
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.media.MediaRecorder
+import android.net.Uri
+import android.os.Build
 import android.util.Log
+import androidx.core.content.ContextCompat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -12,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -35,7 +43,11 @@ import com.messaging.domain.entity.Message
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
 import java.text.SimpleDateFormat
+import java.io.File
+import java.io.FileOutputStream
 import java.util.*
+import coil.compose.AsyncImage
+import com.messaging.util.Constants
 
 /**
  * Formats a byte count as a human-readable size (B / KB / MB / GB), matching how every other
@@ -80,6 +92,8 @@ fun ChatScreen(
     val messages by viewModel.messages.collectAsState()
     val otherUserDisplayName by viewModel.otherUserDisplayName.collectAsState()
     val otherUserStatus by viewModel.otherUserStatus.collectAsState()
+    val otherUserProfilePictureUrl by viewModel.otherUserProfilePictureUrl.collectAsState()
+    val otherUserUsername by viewModel.otherUserUsername.collectAsState()
     val isPeerTyping by viewModel.isPeerTyping.collectAsState()
 
     var textState by remember { mutableStateOf("") }
@@ -127,6 +141,62 @@ fun ChatScreen(
     // Staged attachment: picking a file no longer sends it immediately. Instead it's held here
     // so the user can review it - and remove it via the "x" button - before it's actually sent.
     var pendingAttachment by remember { mutableStateOf<PendingAttachment?>(null) }
+    var showChatDetails by remember { mutableStateOf(false) }
+    var isRecording by remember { mutableStateOf(false) }
+    var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
+    var recordingFile by remember { mutableStateOf<File?>(null) }
+
+    fun stageCameraPhoto(bitmap: Bitmap) {
+        val file = File(context.cacheDir, "photo_${System.currentTimeMillis()}.jpg")
+        FileOutputStream(file).use { output -> bitmap.compress(Bitmap.CompressFormat.JPEG, 75, output) }
+        pendingAttachment = PendingAttachment(Uri.fromFile(file), file.name, "image/jpeg", "IMAGE")
+    }
+
+    fun stopRecording() {
+        recorder?.runCatching { stop() }
+        recorder?.release()
+        recorder = null
+        isRecording = false
+        recordingFile?.let { file ->
+            if (file.exists()) pendingAttachment = PendingAttachment(
+                Uri.fromFile(file), file.name, "audio/mp4", "VOICE"
+            )
+        }
+    }
+
+    fun startRecording() {
+        val file = File(context.cacheDir, "voice_${System.currentTimeMillis()}.m4a")
+        val newRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(context) else MediaRecorder()
+        newRecorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+        newRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+        newRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+        newRecorder.setAudioEncodingBitRate(48_000)
+        newRecorder.setAudioSamplingRate(22_050)
+        newRecorder.setOutputFile(file.absolutePath)
+        newRecorder.prepare()
+        newRecorder.start()
+        recordingFile = file
+        recorder = newRecorder
+        isRecording = true
+    }
+
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
+        if (bitmap != null) stageCameraPhoto(bitmap)
+    }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) cameraLauncher.launch(null)
+    }
+    val microphonePermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) startRecording()
+    }
+
+    LaunchedEffect(isRecording) {
+        if (isRecording) {
+            kotlinx.coroutines.delay(60_000)
+            if (isRecording) stopRecording()
+        }
+    }
+    DisposableEffect(Unit) { onDispose { recorder?.release() } }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -207,24 +277,40 @@ fun ChatScreen(
                         )
                     } else {
                         Column {
-                            Text(
-                                text = otherUserDisplayName,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 18.sp
-                            )
-                            if (isPeerTyping) {
-                                Text(
-                                    text = "typing...",
-                                    fontStyle = FontStyle.Italic,
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            } else {
-                                Text(
-                                    text = otherUserStatus.lowercase(Locale.ROOT),
-                                    fontSize = 12.sp,
-                                    color = if (otherUserStatus == "ONLINE") Color(0xFF4CAF50) else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
-                                )
+                            Row(
+                                modifier = Modifier.clickable { showChatDetails = true },
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (!otherUserProfilePictureUrl.isNullOrBlank()) {
+                                    AsyncImage(
+                                        model = otherUserProfilePictureUrl!!.let { if (it.startsWith("http")) it else Constants.ATTACHMENT_BASE_URL + it },
+                                        contentDescription = "Profile picture",
+                                        modifier = Modifier.size(36.dp).clip(CircleShape)
+                                    )
+                                } else {
+                                    Box(
+                                        modifier = Modifier.size(36.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
+                                        contentAlignment = Alignment.Center
+                                    ) { Text(otherUserDisplayName.firstOrNull()?.uppercase() ?: "?", fontWeight = FontWeight.Bold) }
+                                }
+                                Spacer(Modifier.width(10.dp))
+                                Column {
+                                    Text(text = otherUserDisplayName, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                                    if (isPeerTyping) {
+                                        Text(
+                                            text = "typing...",
+                                            fontStyle = FontStyle.Italic,
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    } else {
+                                        Text(
+                                            text = otherUserStatus.lowercase(Locale.ROOT),
+                                            fontSize = 12.sp,
+                                            color = if (otherUserStatus == "ONLINE") Color(0xFF4CAF50) else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -345,6 +431,36 @@ fun ChatScreen(
                         tint = MaterialTheme.colorScheme.primary
                     )
                 }
+                IconButton(
+                    onClick = {
+                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                            cameraLauncher.launch(null)
+                        } else {
+                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                        }
+                    },
+                    enabled = !isRecording
+                ) {
+                    Icon(Icons.Default.CameraAlt, contentDescription = "Take photo", tint = MaterialTheme.colorScheme.primary)
+                }
+                IconButton(
+                    onClick = {
+                        if (isRecording) {
+                            stopRecording()
+                        } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                            startRecording()
+                        } else {
+                            microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    },
+                    enabled = pendingAttachment == null
+                ) {
+                    Icon(
+                        if (isRecording) Icons.Default.Stop else Icons.Default.Mic,
+                        contentDescription = if (isRecording) "Stop recording" else "Record voice message",
+                        tint = if (isRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                    )
+                }
                 Spacer(modifier = Modifier.width(4.dp))
                 TextField(
                     value = textState,
@@ -392,6 +508,20 @@ fun ChatScreen(
                 }
             }
         }
+    }
+
+    if (showChatDetails) {
+        AlertDialog(
+            onDismissRequest = { showChatDetails = false },
+            title = { Text(otherUserDisplayName) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Status: ${otherUserStatus.lowercase(Locale.ROOT)}")
+                    if (otherUserUsername.isNotBlank()) Text("Username: @$otherUserUsername")
+                }
+            },
+            confirmButton = { TextButton(onClick = { showChatDetails = false }) { Text("Close") } }
+        )
     }
 }
 

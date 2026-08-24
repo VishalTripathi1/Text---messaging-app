@@ -8,6 +8,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.beans.factory.annotation.Value;
 
 import java.io.IOException;
 import java.net.MalformedURLException;
@@ -28,8 +29,8 @@ public class AttachmentController {
 
     private final Path fileStorageLocation;
 
-    public AttachmentController() {
-        this.fileStorageLocation = Paths.get("uploads").toAbsolutePath().normalize();
+    public AttachmentController(@Value("${app.file.upload-dir:./volume/uploads}") String uploadDirectory) {
+        this.fileStorageLocation = Paths.get(uploadDirectory).toAbsolutePath().normalize();
         try {
             Files.createDirectories(this.fileStorageLocation);
         } catch (IOException e) {
@@ -39,6 +40,19 @@ public class AttachmentController {
 
     @PostMapping("/upload")
     public ResponseEntity<Map<String, Object>> uploadFile(@RequestParam("file") MultipartFile file) {
+        if (file.isEmpty() || file.getSize() > 10L * 1024 * 1024) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        String contentType = file.getContentType();
+        if (contentType == null || !(contentType.startsWith("image/")
+                || contentType.startsWith("audio/")
+                || contentType.startsWith("video/")
+                || contentType.equals("application/pdf")
+                || contentType.equals("text/plain"))) {
+            return ResponseEntity.badRequest().build();
+        }
+
         String rawFileName = StringUtils.cleanPath(file.getOriginalFilename());
         String safeFileName = rawFileName.replaceAll("[^a-zA-Z0-9\\.\\-_]", "_");
         String uniqueFileName = UUID.randomUUID().toString() + "_" + safeFileName;
@@ -52,7 +66,7 @@ public class AttachmentController {
             Map<String, Object> response = new HashMap<>();
             response.put("filePath", downloadUri);
             response.put("fileName", rawFileName);
-            response.put("fileType", file.getContentType());
+            response.put("fileType", contentType);
             response.put("fileSize", file.getSize());
 
             return ResponseEntity.ok(response);
