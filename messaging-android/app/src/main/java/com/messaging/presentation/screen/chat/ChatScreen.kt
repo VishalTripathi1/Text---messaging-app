@@ -1000,14 +1000,6 @@ fun AttachmentCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            if (message.messageType == "IMAGE") {
-                AsyncImage(
-                    model = photoRequest,
-                    contentDescription = "Open photo",
-                    modifier = Modifier.size(72.dp).clip(RoundedCornerShape(6.dp)),
-                    contentScale = ContentScale.Crop
-                )
-            }
             Icon(
                 imageVector = if (message.messageType == "VOICE" && isPlaying) Icons.Default.Pause else if (message.messageType == "VOICE") Icons.Default.PlayArrow else Icons.Default.AttachFile,
                 contentDescription = "File Icon",
