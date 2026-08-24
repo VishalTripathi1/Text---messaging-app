@@ -200,7 +200,7 @@ public class MessageServiceImpl implements MessageService {
                 pushNotificationService.sendPushNotification(
                         recipient.getId(),
                         getUserDisplayName(sender),
-                        savedMessage.getMessageText(),
+                        notificationText(savedMessage),
                         Map.of(
                                 "chatId", chat.getId().toString(),
                                 "type", "CHAT_MESSAGE"
@@ -224,7 +224,7 @@ public class MessageServiceImpl implements MessageService {
                     pushNotificationService.sendPushNotification(
                             member.getUser().getId(),
                             group.getGroupName() + " (" + getUserDisplayName(sender) + ")",
-                            savedMessage.getMessageText(),
+                            notificationText(savedMessage),
                             Map.of(
                                     "groupId", group.getId().toString(),
                                     "type", "GROUP_MESSAGE"
@@ -656,6 +656,10 @@ public class MessageServiceImpl implements MessageService {
         if (!message.getSender().getId().equals(userId)) {
             throw new BadRequestException("You can only edit your own messages");
         }
+        if (message.getMessageType() != Message.MessageType.TEXT ||
+                !attachmentRepository.findByMessageId(messageId).isEmpty()) {
+            throw new BadRequestException("Photo and voice messages cannot be edited");
+        }
         if (newText == null || newText.trim().isEmpty() || newText.length() > 5000) {
             throw new BadRequestException("Edited message must contain 1 to 5000 characters");
         }
@@ -776,6 +780,16 @@ public class MessageServiceImpl implements MessageService {
         return oneLine.length() <= 80 ? oneLine : oneLine.substring(0, 79) + "…";
     }
 
+    private String notificationText(Message message) {
+        return switch (message.getMessageType()) {
+            case IMAGE -> "Photo";
+            case VOICE -> "Voice message";
+            case VIDEO -> "Video";
+            case DOCUMENT -> "Document";
+            default -> excerpt(message.getMessageText());
+        };
+    }
+
     @Override
     @Transactional
     public MessageResponse deleteMessage(Long userId, Long messageId) {
@@ -845,7 +859,7 @@ public class MessageServiceImpl implements MessageService {
      * <p>The reaction endpoints took a message id straight from the URL and never checked it, the
      * same hole {@link #getChatMessages} had: any authenticated user could react to any message just
      * by guessing an id. Harmless-looking until a reaction started notifying the message's author -
-     * at that point the unchecked endpoint becomes a way to send somebody push notifications by
+                    .messageText(notificationText(request.getMessageText()))
      * walking the id space. Reuses the isUserInChat/isUserInGroup queries already in
      * MessageRepository.
      */

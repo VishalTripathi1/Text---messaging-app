@@ -101,6 +101,7 @@ fun ChatScreen(
     val otherUserProfilePictureUrl by viewModel.otherUserProfilePictureUrl.collectAsState()
     val otherUserUsername by viewModel.otherUserUsername.collectAsState()
     val otherUserBio by viewModel.otherUserBio.collectAsState()
+    val accessToken by viewModel.accessToken.collectAsState()
     val isPeerTyping by viewModel.isPeerTyping.collectAsState()
 
     var textState by remember { mutableStateOf("") }
@@ -395,6 +396,7 @@ fun ChatScreen(
                         message = message,
                         isOwnMessage = isOwnMessage,
                         currentUserId = viewModel.currentUserId,
+                        accessToken = accessToken,
                         onReact = { reaction ->
                             viewModel.toggleReaction(message.id, reaction)
                         },
@@ -577,6 +579,7 @@ fun MessageBubble(
     message: Message,
     isOwnMessage: Boolean,
     currentUserId: Long,
+    accessToken: String?,
     onReact: (String) -> Unit,
     onEdit: (String) -> Unit,
     onDelete: () -> Unit
@@ -617,6 +620,7 @@ fun MessageBubble(
                     AttachmentCard(
                         message = message,
                         isOwnMessage = isOwnMessage,
+                        accessToken = accessToken,
                         onLongClick = { showOptions = true }
                     )
                     Spacer(modifier = Modifier.height(4.dp))
@@ -767,7 +771,7 @@ fun MessageBubble(
                         }
                     }
 
-                    if (isOwnMessage && !message.isDeleted) {
+                    if (isOwnMessage && !message.isDeleted && message.messageType == "TEXT" && message.attachmentPath == null) {
                         Divider()
                         Button(
                             onClick = {
@@ -834,6 +838,7 @@ fun MessageBubble(
 fun AttachmentCard(
     message: Message,
     isOwnMessage: Boolean,
+    accessToken: String?,
     onLongClick: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -872,7 +877,8 @@ fun AttachmentCard(
                                 isPlaying = true
                             } else {
                                 player.reset()
-                                player.setDataSource(context, uri)
+                                val headers = accessToken?.let { mapOf("Authorization" to "Bearer $it") } ?: emptyMap()
+                                player.setDataSource(context, uri, headers)
                                 player.setOnPreparedListener {
                                     playerReady = true
                                     player.start()

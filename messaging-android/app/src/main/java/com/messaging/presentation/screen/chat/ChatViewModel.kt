@@ -60,6 +60,9 @@ class ChatViewModel @Inject constructor(
     private val _otherUserBio = MutableStateFlow<String?>(null)
     val otherUserBio: StateFlow<String?> = _otherUserBio
 
+    val accessToken: StateFlow<String?> = tokenManager.accessToken
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
     private val _isPeerTyping = MutableStateFlow(false)
     val isPeerTyping: StateFlow<Boolean> = _isPeerTyping
 

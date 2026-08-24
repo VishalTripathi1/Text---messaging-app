@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -31,6 +32,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.navigation.NavController
 import com.messaging.domain.entity.Chat
+import coil.compose.AsyncImage
+import com.messaging.util.Constants
 import com.messaging.presentation.navigation.Screen
 import java.text.SimpleDateFormat
 import java.util.*
@@ -200,18 +203,28 @@ fun ChatItem(
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                val initials = if (chat.isGroup) {
-                    chat.groupName?.take(2)?.uppercase() ?: "GP"
+                val imagePath = chat.otherUser?.profilePictureUrl
+                if (!chat.isGroup && !imagePath.isNullOrBlank()) {
+                    AsyncImage(
+                        model = if (imagePath.startsWith("http")) imagePath else Constants.ATTACHMENT_BASE_URL + imagePath,
+                        contentDescription = "Profile picture",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
                 } else {
-                    chat.otherUser?.displayName?.take(2)?.uppercase() ?: "??"
+                    val initials = if (chat.isGroup) {
+                        chat.groupName?.take(2)?.uppercase() ?: "GP"
+                    } else {
+                        chat.otherUser?.displayName?.take(2)?.uppercase() ?: "??"
+                    }
+                    Text(
+                        text = initials,
+                        color = if (chat.isGroup) MaterialTheme.colorScheme.onSecondaryContainer
+                                else MaterialTheme.colorScheme.onPrimaryContainer,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp
+                    )
                 }
-                Text(
-                    text = initials,
-                    color = if (chat.isGroup) MaterialTheme.colorScheme.onSecondaryContainer
-                            else MaterialTheme.colorScheme.onPrimaryContainer,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp
-                )
                 if (!chat.isGroup && chat.otherUser?.status == "ONLINE") {
                     Box(
                         modifier = Modifier
