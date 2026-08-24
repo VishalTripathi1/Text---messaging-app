@@ -61,6 +61,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.*
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.messaging.util.Constants
 
 /**
@@ -916,7 +917,14 @@ fun AttachmentCard(
     var isDownloading by remember(message.id) { mutableStateOf(false) }
     val cardColor = if (isOwnMessage) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
                     else MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
-    val contentColor = if (isOwnMessage) Color.White else MaterialTheme.colorScheme.onSurface
+    val contentColor = if (isOwnMessage) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+    val photoRequest = remember(message.id, accessToken) {
+        ImageRequest.Builder(context)
+            .data(fullAttachmentUrl(message))
+            .apply { accessToken?.let { addHeader("Authorization", "Bearer $it") } }
+            .crossfade(true)
+            .build()
+    }
     var isPlaying by remember(message.id) { mutableStateOf(false) }
     var playerReady by remember(message.id) { mutableStateOf(false) }
     var playbackPosition by remember(message.id) { mutableStateOf(0L) }
@@ -992,6 +1000,14 @@ fun AttachmentCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            if (message.messageType == "IMAGE") {
+                AsyncImage(
+                    model = photoRequest,
+                    contentDescription = "Open photo",
+                    modifier = Modifier.size(72.dp).clip(RoundedCornerShape(6.dp)),
+                    contentScale = ContentScale.Crop
+                )
+            }
             Icon(
                 imageVector = if (message.messageType == "VOICE" && isPlaying) Icons.Default.Pause else if (message.messageType == "VOICE") Icons.Default.PlayArrow else Icons.Default.AttachFile,
                 contentDescription = "File Icon",
@@ -1017,7 +1033,7 @@ fun AttachmentCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                if (message.messageType == "VOICE") {
+                if (message.messageType == "VOICE" && isPlaying) {
                     val safeDuration = playbackDuration.toFloat().coerceAtLeast(1f)
                     Slider(
                         value = playbackPosition.toFloat().coerceIn(0f, safeDuration),
@@ -1083,7 +1099,7 @@ fun AttachmentCard(
             onDismissRequest = { showPhotoPreview = false },
             text = {
                 AsyncImage(
-                    model = fullAttachmentUrl(message),
+                    model = photoRequest,
                     contentDescription = "Photo",
                     modifier = Modifier.fillMaxWidth(),
                     contentScale = ContentScale.Fit

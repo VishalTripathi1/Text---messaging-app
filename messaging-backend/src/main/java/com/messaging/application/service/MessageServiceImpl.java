@@ -808,6 +808,8 @@ public class MessageServiceImpl implements MessageService {
         attachmentRepository.deleteAll(attachmentRepository.findByMessageId(messageId));
         MessageResponse response = mapToMessageResponse(messageRepository.save(message));
         response.setDeliveryStatus(null);
+        List<Long> recipientIds = otherParticipantIds(message, userId);
+        pushMessageChange(message, userId, recipientIds, "MESSAGE_DELETED", "This message was deleted");
         return response;
     }
 

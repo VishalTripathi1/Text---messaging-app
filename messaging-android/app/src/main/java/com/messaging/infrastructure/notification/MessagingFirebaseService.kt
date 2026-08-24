@@ -87,8 +87,9 @@ class MessagingFirebaseService : FirebaseMessagingService() {
             // fell through to `else -> null`, which means no deep link *and* no Room sync - the
             // notification would open the app to whatever screen it started on and the edit would
             // not be visible until some later sync happened to pick it up.
-            "MESSAGE_EDITED", "MESSAGE_REACTION" ->
+            "MESSAGE_EDITED", "MESSAGE_REACTION", "MESSAGE_DELETED" ->
                 remoteMessage.data["chatId"]?.toLongOrNull()
+                    ?: remoteMessage.data["groupId"]?.toLongOrNull()?.let { -it }
                     ?: remoteMessage.data["groupId"]?.toLongOrNull()?.let { -it }
             else -> null
         }
@@ -129,9 +130,16 @@ class MessagingFirebaseService : FirebaseMessagingService() {
         // groups that deepLinkChatId already uses, so it can be passed straight through.
         if (deepLinkChatId != null) {
             serviceScope.launch {
-                chatRepository.syncMessages(deepLinkChatId)
-                    .onFailure { Timber.e(it, "Failed to sync messages for chat $deepLinkChatId after push") }
-                chatRepository.syncChats()
+                // The backend dispatches FCM while the message transaction is still completing.
+                // The first request can therefore arrive a few milliseconds before the new row is
+                // visible. Retry briefly so attachment-only messages also appear in the inbox
+                // without requiring the receiver to open the conversation.
+                repeat(3) { attempt ->
+                    chatRepository.syncChats()
+                    chatRepository.syncMessages(deepLinkChatId)
+                        .onFailure { Timber.e(it, "Failed to sync messages for chat $deepLinkChatId after push (attempt ${attempt + 1})") }
+                    if (attempt < 2) kotlinx.coroutines.delay(1500)
+                }
             }
         }
     }
