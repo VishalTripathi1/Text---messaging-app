@@ -52,11 +52,20 @@ object NetworkModule {
      * Timeouts sized for a cold backend rather than a warm one.
      *
      * The backend runs on Render's free tier, which stops the instance after roughly 15 minutes of
-     * inactivity, and the container is deliberately memory-starved (-Xmx192m, CICompilerCount=2)
-     * so it fits in 512 MB - which trades startup time for memory. A cold boot can take most of a
-     * minute. Every timeout here used to be 15 seconds, so the first request after any idle period
-     * was guaranteed to fail, which is what made the app look permanently disconnected until the
-     * user logged in again.
+     * inactivity, and the container is deliberately memory-starved (-Xmx192m, TieredStopAtLevel=1)
+     * so it fits in 512 MB - which trades startup time for memory. Every timeout here used to be 15
+     * seconds, so the first request after any idle period was guaranteed to fail, which is what made
+     * the app look permanently disconnected until the user logged in again.
+     *
+     * The numbers come from a measured cold start rather than a guess. Render's logs for one:
+     * process start to "Started MessagingApplication in 142.9 seconds", then a further 22 seconds
+     * before the first response was written. Roughly 180 seconds, against the 90-second read timeout
+     * that was here - so a genuine cold start could not succeed, and the backend logged the proof as
+     * a Broken pipe while flushing a response the phone had already given up waiting for. 180/240
+     * clears the measurement with a little room; anything smaller is arithmetic that cannot work.
+     *
+     * A ceiling this high costs nothing on a healthy server, where these calls answer in well under
+     * a second. It is only ever reached when the alternative is failing.
      *
      * connect stays short because the TCP/TLS handshake terminates at Render's edge and completes
      * immediately whether or not the instance behind it is awake; the waiting is done on the
@@ -66,9 +75,9 @@ object NetworkModule {
     private fun OkHttpClient.Builder.applyColdStartTimeouts(): OkHttpClient.Builder {
         return this
             .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(90, TimeUnit.SECONDS)
+            .readTimeout(180, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
-            .callTimeout(120, TimeUnit.SECONDS)
+            .callTimeout(240, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
     }
 

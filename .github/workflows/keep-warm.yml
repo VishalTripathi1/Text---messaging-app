@@ -1,21 +1,28 @@
-# Keeps the Render free-tier backend from spinning down.
+# Backstop only. The primary keep-warm is an external uptime pinger (cron-job.org / UptimeRobot),
+# because GitHub's scheduler will not do this job - see below.
 #
 # Render stops a free web service after roughly 15 minutes with no inbound requests, and this
-# container is deliberately memory-starved to fit 512 MB (see messaging-backend/Dockerfile:
-# -Xmx192m, CICompilerCount=2), so a cold boot takes most of a minute. That is why the app used to
-# look permanently disconnected until the user logged in again.
+# container is deliberately memory-starved to fit 512 MB (see messaging-backend/Dockerfile), so a
+# cold boot takes about 180 seconds: one measured run reached "Started MessagingApplication in 142.9
+# seconds" and then spent a further 22 seconds before writing its first response.
 #
-# Known limits, worth stating rather than discovering later:
+# Why this workflow is not the mechanism, measured rather than assumed. `gh run list` for it showed
+# run ages of 9 min, 53 min, 1 h, 2 h, 3 h, 4 h, 6 h, 7 h, 7 h, 8 h - the cron below says every 12
+# minutes, and GitHub was dispatching it about once an hour, silently dropping the rest. GitHub
+# documents scheduled runs as best-effort and deprioritises frequent schedules on low-traffic repos.
+# An hourly ping against a 15-minute idle timeout keeps nothing warm, and the elapsed column proved
+# it: nearly every run took ~3 minutes, i.e. every ping was itself sitting through a full cold boot,
+# because the instance had already been stopped before the ping arrived. The only fast run (6 s)
+# happened to land while the app was in use. So this cost instance-hours and delivered a cold boot
+# an hour, which is worse than nothing.
+#
+# Other limits, worth stating rather than discovering later:
 #   * GitHub disables scheduled workflows in a repository with no commits for 60 days. It emails
 #     first, and the "Enable workflow" button in the Actions tab brings it back.
-#   * Scheduled runs are best-effort. Under load GitHub delays cron by 10+ minutes, which is why the
-#     interval is 12 minutes rather than 14 - a single skipped run should still land inside the
-#     window.
-#   * A ping every 12 minutes keeps the instance up ~24/7, which uses close to the whole 750
-#     instance-hours/month free allowance (a month is ~730 hours). There is no room left for a
-#     second free web service on the same account.
-#   * This makes cold starts rare, not impossible. The client-side recovery it accompanies still
-#     matters - a missed run, a deploy, or a Render restart all produce one.
+#   * Runs of ~3 minutes every 12 minutes would exceed the 2000 free Actions minutes/month on a
+#     private repository. Disable this workflow once the external pinger is confirmed working.
+#   * Keeping the instance up around the clock uses close to the whole 750 instance-hours/month
+#     Render allowance (a month is ~730 hours). Pinging only during waking hours leaves headroom.
 #
 # Runs can be disabled from the Actions tab (needed to reproduce a cold start on purpose) and
 # triggered by hand with workflow_dispatch.
@@ -35,16 +42,16 @@ concurrency:
 jobs:
   ping:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - name: Ping health endpoint
         run: |
           # /api/v1/health is public (SecurityConfig permits it unauthenticated), so no secret is
-          # needed. -m 120 because the first request after a spin-down waits out the JVM boot;
-          # --retry covers the case where Render's edge answers 502 while the origin is still coming
-          # up.
+          # needed. -m 240 covers the ~180s cold boot with room to spare; it was 120, which is less
+          # than the boot itself, so a cold instance always failed the first attempt and only
+          # succeeded on the retry below - which is why runs logged ~3 minutes and still passed.
           curl --silent --show-error --fail \
-               --max-time 120 \
+               --max-time 240 \
                --retry 2 --retry-delay 15 --retry-all-errors \
                --write-out 'http=%{http_code} connect=%{time_connect}s first_byte=%{time_starttransfer}s total=%{time_total}s\n' \
                --output /dev/null \

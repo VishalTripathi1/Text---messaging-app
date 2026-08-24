@@ -29,12 +29,17 @@ public class JwtProvider {
     /**
      * Reports the token lifetimes actually in force, once, at startup.
      *
-     * application.properties defaults both to 30 days, but each is overridable by an environment
-     * variable (JWT_EXPIRATION / JWT_REFRESH_EXPIRATION) - and a deployment that quietly sets the
-     * access token to an hour looks exactly like a bug from the outside: everything works, then
-     * every request starts failing at a time nobody can account for. Printing the effective values
-     * means the deploy log answers that question directly. Note the refresh lifetime is the one
-     * that decides whether a session can renew itself silently or the user has to log in again.
+     * application.properties defaults these to 24 hours and 90 days, but each is overridable by an
+     * environment variable (JWT_EXPIRATION / JWT_REFRESH_EXPIRATION) - and a deployment that quietly
+     * sets the access token to an hour looks exactly like a bug from the outside: everything works,
+     * then every request starts failing at a time nobody can account for. Printing the effective
+     * values means the deploy log answers that question directly.
+     *
+     * The refresh lifetime is the one that decides whether a session can renew itself silently or
+     * the user has to log in again, so the two must never be equal: when they were (both 30 days,
+     * issued together at login) the refresh token expired at the same instant as the access token it
+     * existed to replace, and every idle user was forced to log in again. If this line ever shows
+     * the two values close together, that is the bug, wherever it was set.
      */
     @jakarta.annotation.PostConstruct
     void logTokenLifetimes() {
