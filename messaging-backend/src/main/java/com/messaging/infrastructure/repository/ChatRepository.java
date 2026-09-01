@@ -86,7 +86,7 @@ public interface ChatRepository extends JpaRepository<Chat, Long> {
      * are counted on purpose: deleting the last message in a conversation should not make the whole
      * conversation vanish. Backed by the idx_chat index on messages (chat_id, created_at).
      */
-    @Query("SELECT c FROM Chat c LEFT JOIN ChatUserPreference p ON p.chat = c AND p.user.id = :userId WHERE " +
+    @Query("SELECT c FROM Chat c LEFT JOIN ChatUserPreference p ON p.chatId = c.id AND p.user.id = :userId WHERE " +
            "(c.user1.id = :userId OR c.user2.id = :userId) AND " +
            "COALESCE(p.isArchived, false) = false AND " +
            "COALESCE(p.isCleared, false) = false AND " +
@@ -95,25 +95,25 @@ public interface ChatRepository extends JpaRepository<Chat, Long> {
            "ORDER BY c.lastMessageAt DESC")
     Page<Chat> findUserChatsExcludingArchived(@Param("userId") Long userId, Pageable pageable);
 
-    @Query("SELECT c FROM Chat c JOIN ChatUserPreference p ON p.chat = c WHERE " +
+    @Query("SELECT c FROM Chat c JOIN ChatUserPreference p ON p.chatId = c.id WHERE " +
            "(c.user1.id = :userId OR c.user2.id = :userId) AND " +
            "p.user.id = :userId AND p.isArchived = true " +
            "ORDER BY c.lastMessageAt DESC")
     Page<Chat> findArchivedUserChats(@Param("userId") Long userId, Pageable pageable);
 
-    @Query("SELECT c FROM Chat c JOIN ChatUserPreference p ON p.chat = c WHERE " +
+    @Query("SELECT c FROM Chat c JOIN ChatUserPreference p ON p.chatId = c.id WHERE " +
            "(c.user1.id = :userId OR c.user2.id = :userId) AND " +
            "p.user.id = :userId AND p.isCleared = true " +
            "ORDER BY c.lastMessageAt DESC")
     Page<Chat> findClearedUserChats(@Param("userId") Long userId, Pageable pageable);
 
-    @Query("SELECT c FROM Chat c JOIN ChatUserPreference p ON p.chat = c WHERE " +
+    @Query("SELECT c FROM Chat c JOIN ChatUserPreference p ON p.chatId = c.id WHERE " +
            "(c.user1.id = :userId OR c.user2.id = :userId) AND " +
            "p.user.id = :userId AND p.deleted = true " +
            "ORDER BY c.lastMessageAt DESC")
     Page<Chat> findDeletedUserChats(@Param("userId") Long userId, Pageable pageable);
 
-    @Query("SELECT c FROM Chat c JOIN ChatUserPreference p ON p.chat = c WHERE " +
+    @Query("SELECT c FROM Chat c JOIN ChatUserPreference p ON p.chatId = c.id WHERE " +
            "(c.user1.id = :userId OR c.user2.id = :userId) AND " +
            "p.user.id = :userId AND p.isPinned = true")
     Page<Chat> findPinnedChats(@Param("userId") Long userId, Pageable pageable);
