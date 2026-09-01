@@ -160,6 +160,17 @@ fun ProfileScreen(
                                 Text("Change photo")
                             }
 
+                            if (!profilePictureUrl.isBlank()) {
+                                TextButton(onClick = {
+                                    profilePictureUrl = ""
+                                    viewModel.saveProfile(displayName, bio, "")
+                                }) {
+                                    Icon(Icons.Default.Delete, contentDescription = null)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Remove photo")
+                                }
+                            }
+
                             Spacer(modifier = Modifier.height(12.dp))
 
                             Text(

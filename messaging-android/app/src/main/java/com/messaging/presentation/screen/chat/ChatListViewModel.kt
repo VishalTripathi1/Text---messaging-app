@@ -60,4 +60,10 @@ class ChatListViewModel @Inject constructor(
             chatRepository.toggleArchiveChat(chatId, archived)
         }
     }
+
+    fun deleteChat(chatId: Long) {
+        viewModelScope.launch {
+            chatRepository.deleteChat(chatId)
+        }
+    }
 }

@@ -1002,6 +1002,28 @@ class ChatRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun getGroupDetails(groupId: Long): Result<com.messaging.data.model.response.GroupResponse> = withContext(Dispatchers.IO) {
+        runCatching {
+            val response = chatApiService.getGroupDetails(groupId)
+            response.body()?.takeIf { response.isSuccessful }
+                ?: throw Exception(parseErrorMessage(response, "Failed to load group details"))
+        }
+    }
+
+    override suspend fun addGroupMembers(groupId: Long, userIds: List<Long>): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val response = chatApiService.addGroupMembers(groupId, userIds)
+            if (!response.isSuccessful) throw Exception(parseErrorMessage(response, "Failed to add members"))
+        }
+    }
+
+    override suspend fun removeGroupMember(groupId: Long, userId: Long): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val response = chatApiService.removeGroupMember(groupId, userId)
+            if (!response.isSuccessful) throw Exception(parseErrorMessage(response, "Failed to remove member"))
+        }
+    }
+
     /**
      * Applies an edit locally, then sends it and takes the server's word for the resulting tick.
      *
@@ -1168,6 +1190,43 @@ class ChatRepositoryImpl @Inject constructor(
                 Result.success(Unit)
             } else {
                 Result.failure(Exception(parseErrorMessage(response, "Failed to archive chat")))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun clearChat(chatId: Long): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val response = chatApiService.clearChat(chatId)
+            if (response.isSuccessful) {
+                if (chatId > 0) messageDao.deleteMessagesForChat(chatId) else messageDao.deleteMessagesForGroup(-chatId)
+                val chat = chatDao.getChatById(chatId)
+                if (chat != null) {
+                    chatDao.clearChatState(chatId)
+                }
+                Result.success(Unit)
+            } else {
+                Result.failure(Exception(parseErrorMessage(response, "Failed to clear chat")))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun deleteChat(chatId: Long): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val response = chatApiService.deleteChat(chatId)
+            if (response.isSuccessful) {
+                if (chatId > 0) {
+                    messageDao.deleteMessagesForChat(chatId)
+                } else {
+                    messageDao.deleteMessagesForGroup(-chatId)
+                }
+                chatDao.deleteChat(chatId)
+                Result.success(Unit)
+            } else {
+                Result.failure(Exception(parseErrorMessage(response, "Failed to delete chat")))
             }
         } catch (e: Exception) {
             Result.failure(e)

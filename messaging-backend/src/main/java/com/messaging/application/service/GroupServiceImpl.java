@@ -2,6 +2,7 @@ package com.messaging.application.service;
 
 import com.messaging.domain.dto.request.GroupCreateRequest;
 import com.messaging.domain.dto.response.GroupResponse;
+import com.messaging.domain.dto.response.UserResponse;
 import com.messaging.domain.entity.Group;
 import com.messaging.domain.entity.GroupMember;
 import com.messaging.domain.entity.User;
@@ -147,6 +148,12 @@ public class GroupServiceImpl implements GroupService {
                 .createdByUserId(group.getCreatedBy() != null ? group.getCreatedBy().getId() : null)
                 .createdAt(group.getCreatedAt())
                 .memberCount(memberCount)
+                .members(group.getMembers() == null ? List.of() : group.getMembers().stream().map(member -> UserResponse.builder()
+                    .id(member.getUser().getId())
+                    .username(member.getUser().getUsername())
+                    .email(member.getUser().getEmail())
+                    .displayName(member.getUser().getUsername())
+                    .build()).collect(Collectors.toList()))
                 .build();
     }
 }

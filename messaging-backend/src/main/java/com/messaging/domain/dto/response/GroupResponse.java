@@ -5,6 +5,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * GroupResponse - Response payload representing group details and metadata
@@ -21,4 +22,5 @@ public class GroupResponse {
     private Long createdByUserId;
     private LocalDateTime createdAt;
     private long memberCount;
+    private List<UserResponse> members;
 }

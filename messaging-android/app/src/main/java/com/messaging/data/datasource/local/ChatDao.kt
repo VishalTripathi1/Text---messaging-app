@@ -78,8 +78,14 @@ interface ChatDao {
     @Query("UPDATE chats SET lastMessageStatus = :status WHERE id = :chatId AND lastMessageSenderId = :senderId AND lastMessageText = :text")
     fun updateLastMessageStatus(chatId: Long, senderId: Long, text: String?, status: String)
 
+    @Query("DELETE FROM chats WHERE id = :chatId")
+    fun deleteChat(chatId: Long)
+
     @Query("DELETE FROM chats")
     fun deleteAllChats()
+
+    @Query("UPDATE chats SET lastMessageText = NULL, lastMessageSenderId = NULL, lastMessageStatus = NULL, lastMessageAt = NULL, unreadCount = 0 WHERE id = :chatId")
+    fun clearChatState(chatId: Long)
 
     /**
      * Removes cached chats the server no longer lists, so a chat deleted server-side stops showing

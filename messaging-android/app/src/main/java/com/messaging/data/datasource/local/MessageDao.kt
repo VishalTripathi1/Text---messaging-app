@@ -41,6 +41,9 @@ interface MessageDao {
     @Query("DELETE FROM messages WHERE chatId = :chatId")
     fun deleteMessagesForChat(chatId: Long)
 
+    @Query("DELETE FROM messages WHERE groupId = :groupId")
+    fun deleteMessagesForGroup(groupId: Long)
+
     @Query("DELETE FROM messages WHERE id = :id")
     fun deleteMessageById(id: Long)
 

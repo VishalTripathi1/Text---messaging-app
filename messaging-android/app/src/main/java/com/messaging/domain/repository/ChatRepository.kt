@@ -50,6 +50,9 @@ interface ChatRepository {
     fun getGroupMessagesFlow(groupId: Long): Flow<List<Message>>
     
     suspend fun syncGroupMessages(groupId: Long): Result<Unit>
+    suspend fun getGroupDetails(groupId: Long): Result<com.messaging.data.model.response.GroupResponse>
+    suspend fun addGroupMembers(groupId: Long, userIds: List<Long>): Result<Unit>
+    suspend fun removeGroupMember(groupId: Long, userId: Long): Result<Unit>
 
     suspend fun editMessage(messageId: Long, newText: String): Result<Unit>
 
@@ -62,6 +65,10 @@ interface ChatRepository {
     suspend fun togglePinChat(chatId: Long, pinned: Boolean): Result<Unit>
 
     suspend fun toggleArchiveChat(chatId: Long, archived: Boolean): Result<Unit>
+
+    suspend fun clearChat(chatId: Long): Result<Unit>
+
+    suspend fun deleteChat(chatId: Long): Result<Unit>
 
     suspend fun searchMessages(query: String): Result<List<Message>>
 

@@ -660,6 +660,10 @@ public class MessageServiceImpl implements MessageService {
                 !attachmentRepository.findByMessageId(messageId).isEmpty()) {
             throw new BadRequestException("Photo and voice messages cannot be edited");
         }
+        if (message.getCreatedAt() == null ||
+                message.getCreatedAt().isBefore(LocalDateTime.now().minusHours(24))) {
+            throw new BadRequestException("Messages can only be edited within 24 hours");
+        }
         if (newText == null || newText.trim().isEmpty() || newText.length() > 5000) {
             throw new BadRequestException("Edited message must contain 1 to 5000 characters");
         }

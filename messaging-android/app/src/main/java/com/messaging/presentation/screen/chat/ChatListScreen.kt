@@ -193,6 +193,9 @@ fun ChatListScreen(
                             },
                             onArchiveToggle = {
                                 viewModel.archiveChat(chat.id, !chat.isArchived)
+                            },
+                            onDeleteChat = {
+                                viewModel.deleteChat(chat.id)
                             }
                         )
                         Divider(
@@ -215,7 +218,8 @@ fun ChatItem(
     currentUserId: Long,
     onClick: () -> Unit,
     onPinToggle: () -> Unit,
-    onArchiveToggle: () -> Unit
+    onArchiveToggle: () -> Unit,
+    onDeleteChat: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
@@ -407,6 +411,13 @@ fun ChatItem(
                 text = { Text(if (chat.isArchived) "Unarchive Chat" else "Archive Chat") },
                 onClick = {
                     onArchiveToggle()
+                    showMenu = false
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Delete Chat") },
+                onClick = {
+                    onDeleteChat()
                     showMenu = false
                 }
             )

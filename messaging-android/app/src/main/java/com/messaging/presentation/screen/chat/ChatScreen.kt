@@ -31,11 +31,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontStyle
@@ -51,6 +54,7 @@ import androidx.navigation.NavController
 import com.messaging.domain.entity.Message
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.debounce
@@ -174,7 +178,7 @@ fun ProfileAvatar(imagePath: String?, modifier: Modifier) {
 /**
  * ChatScreen - Renders a conversation list of bubbles with double ticks, attachments, typing state, reactions, and search
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
 @Composable
 fun ChatScreen(
     navController: NavController,
@@ -186,14 +190,16 @@ fun ChatScreen(
     val otherUserProfilePictureUrl by viewModel.otherUserProfilePictureUrl.collectAsState()
     val otherUserUsername by viewModel.otherUserUsername.collectAsState()
     val otherUserBio by viewModel.otherUserBio.collectAsState()
+    val groupDetails by viewModel.groupDetails.collectAsState()
+    val groupContacts by viewModel.contacts.collectAsState()
     val accessToken by viewModel.accessToken.collectAsState()
     val isPeerTyping by viewModel.isPeerTyping.collectAsState()
 
-    var textState by remember { mutableStateOf("") }
+    var textState by rememberSaveable(viewModel.chatId) { mutableStateOf("") }
+    var searchQuery by rememberSaveable(viewModel.chatId) { mutableStateOf("") }
+    var isSearchVisible by rememberSaveable { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val context = LocalContext.current
-
-    val searchQuery = ""
 
     // See the identical fix + rationale in ChatListScreen.kt - without this, reopening an
     // already-composed chat screen (app backgrounded/resumed, or screen unlocked) never
@@ -235,6 +241,7 @@ fun ChatScreen(
     var pendingAttachment by remember { mutableStateOf<PendingAttachment?>(null) }
     var showChatDetails by remember { mutableStateOf(false) }
     var showLargeProfilePhoto by remember { mutableStateOf(false) }
+    var showGroupMembers by remember { mutableStateOf(false) }
     var isRecording by remember { mutableStateOf(false) }
     var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
     var recordingFile by remember { mutableStateOf<File?>(null) }
@@ -381,32 +388,44 @@ fun ChatScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    run {
-                        Column {
-                            Row(
-                                modifier = Modifier.clickable { showChatDetails = true },
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(modifier = Modifier.clickable { showLargeProfilePhoto = true }) {
-                                    ProfileAvatar(otherUserProfilePictureUrl, Modifier.size(36.dp))
-                                }
-                                Spacer(Modifier.width(10.dp))
-                                Column {
-                                    Text(text = otherUserDisplayName, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                                    if (isPeerTyping) {
-                                        Text(
-                                            text = "typing...",
-                                            fontStyle = FontStyle.Italic,
-                                            fontSize = 12.sp,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                    } else {
-                                        Text(
-                                            text = otherUserStatus.lowercase(Locale.ROOT),
-                                            fontSize = 12.sp,
-                                            color = if (otherUserStatus == "ONLINE") Color(0xFF4CAF50) else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
-                                        )
-                                    }
+                    if (isSearchVisible) {
+                        TextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            placeholder = { Text("Search messages") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().padding(end = 8.dp),
+                            colors = TextFieldDefaults.colors(
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent,
+                                focusedContainerColor = MaterialTheme.colorScheme.surface,
+                                unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                            )
+                        )
+                    } else {
+                        Row(
+                            modifier = Modifier.clickable { showChatDetails = true },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(modifier = Modifier.clickable { showLargeProfilePhoto = true }) {
+                                ProfileAvatar(otherUserProfilePictureUrl, Modifier.size(36.dp))
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Column {
+                                Text(text = otherUserDisplayName, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                                if (isPeerTyping) {
+                                    Text(
+                                        text = "typing...",
+                                        fontStyle = FontStyle.Italic,
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                } else {
+                                    Text(
+                                        text = otherUserStatus.lowercase(Locale.ROOT),
+                                        fontSize = 12.sp,
+                                        color = if (otherUserStatus == "ONLINE") Color(0xFF4CAF50) else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
+                                    )
                                 }
                             }
                         }
@@ -417,7 +436,52 @@ fun ChatScreen(
                         Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back")
                     }
                 },
-                actions = {},
+                actions = {
+                    var showOverflowMenu by remember { mutableStateOf(false) }
+                    IconButton(
+                        onClick = {
+                            isSearchVisible = !isSearchVisible
+                            if (!isSearchVisible) searchQuery = ""
+                        }
+                    ) {
+                        Icon(
+                            imageVector = if (isSearchVisible) Icons.Default.Close else Icons.Default.Search,
+                            contentDescription = if (isSearchVisible) "Close search" else "Search messages"
+                        )
+                    }
+                    Box {
+                        IconButton(onClick = { showOverflowMenu = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "More options")
+                        }
+                        DropdownMenu(
+                            expanded = showOverflowMenu,
+                            onDismissRequest = { showOverflowMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(if (viewModel.isBlocked.collectAsState().value) "Unblock" else "Block") },
+                                onClick = {
+                                    viewModel.toggleBlockUser()
+                                    showOverflowMenu = false
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Clear chat") },
+                                onClick = {
+                                    viewModel.clearChat()
+                                    showOverflowMenu = false
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Delete chat") },
+                                onClick = {
+                                    viewModel.deleteChat()
+                                    showOverflowMenu = false
+                                    navController.popBackStack()
+                                }
+                            )
+                        }
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface,
                     titleContentColor = MaterialTheme.colorScheme.onSurface
@@ -429,6 +493,7 @@ fun ChatScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
+                .imePadding()
                 .background(MaterialTheme.colorScheme.background)
         ) {
             // Messages Panel
@@ -454,8 +519,8 @@ fun ChatScreen(
                         onEdit = { newText ->
                             viewModel.editMessage(message.id, newText)
                         },
-                        onDelete = {
-                            viewModel.deleteMessage(message.id)
+                        onDelete = { deleteForEveryone ->
+                            viewModel.deleteMessage(message.id, deleteForEveryone)
                         }
                     )
                 }
@@ -519,8 +584,7 @@ fun ChatScreen(
                     .padding(horizontal = 12.dp, vertical = 8.dp)
                     .clip(RoundedCornerShape(18.dp))
                     .background(MaterialTheme.colorScheme.surface)
-                    .padding(horizontal = 4.dp, vertical = 2.dp)
-                    .imePadding(),
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = { filePickerLauncher.launch(arrayOf("*/*")) }) {
@@ -619,21 +683,56 @@ fun ChatScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Status: ${otherUserStatus.lowercase(Locale.ROOT)}")
                     if (otherUserUsername.isNotBlank()) Text("Username: @$otherUserUsername")
-                    if (!otherUserBio.isNullOrBlank()) Text(otherUserBio!!)
+                    if (!otherUserBio.isNullOrBlank()) Text(otherUserBio ?: "")
+                    if (viewModel.chatId < 0) {
+                        Text("${groupDetails?.memberCount ?: 0} members")
+                        TextButton(onClick = { showGroupMembers = true }) {
+                            Icon(Icons.Default.Group, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Manage members")
+                        }
+                    }
                 }
             },
             confirmButton = { TextButton(onClick = { showChatDetails = false }) { Text("Close") } }
         )
     }
 
-    if (showLargeProfilePhoto && !otherUserProfilePictureUrl.isNullOrBlank()) {
+    if (showGroupMembers) {
+        AlertDialog(
+            onDismissRequest = { showGroupMembers = false },
+            title = { Text("Group members") },
+            text = {
+                Column(modifier = Modifier.heightIn(max = 360.dp)) {
+                    groupDetails?.members.orEmpty().forEach { member ->
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                            Text(member.displayName, modifier = Modifier.weight(1f))
+                            TextButton(onClick = { viewModel.removeGroupMember(member.id) }) { Text("Remove") }
+                        }
+                    }
+                    Text("Add people", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp))
+                    groupContacts.filter { contact -> groupDetails?.members?.none { it.id == contact.id } != false }
+                        .take(8)
+                        .forEach { contact ->
+                            TextButton(onClick = { viewModel.addGroupMembers(listOf(contact.id)) }) {
+                                Text("+ ${contact.displayName}")
+                            }
+                        }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showGroupMembers = false }) { Text("Done") } }
+        )
+    }
+
+    val largeProfilePhotoUrl = otherUserProfilePictureUrl?.takeIf { it.isNotBlank() }
+    if (showLargeProfilePhoto && !largeProfilePhotoUrl.isNullOrBlank()) {
         Dialog(onDismissRequest = { showLargeProfilePhoto = false }) {
             Surface(
                 color = Color.Black,
                 modifier = Modifier.fillMaxWidth().fillMaxHeight(0.75f)
             ) {
                 AsyncImage(
-                    model = if (otherUserProfilePictureUrl!!.startsWith("http")) otherUserProfilePictureUrl else Constants.ATTACHMENT_BASE_URL + otherUserProfilePictureUrl,
+                    model = if (largeProfilePhotoUrl.startsWith("http")) largeProfilePhotoUrl else Constants.ATTACHMENT_BASE_URL + largeProfilePhotoUrl,
                     contentDescription = "Profile picture",
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Fit
@@ -652,15 +751,18 @@ fun MessageBubble(
     accessToken: String?,
     onReact: (String) -> Unit,
     onEdit: (String) -> Unit,
-    onDelete: () -> Unit
+    onDelete: (Boolean) -> Unit
 ) {
     val myCurrentReaction = message.reactions?.firstOrNull { it.userId == currentUserId }?.reaction
     val align = if (isOwnMessage) Alignment.End else Alignment.Start
     val bubbleColor = if (isOwnMessage) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
     val textColor = if (isOwnMessage) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+    val clipboardManager = LocalClipboardManager.current
 
     var showOptions by remember { mutableStateOf(false) }
     var showEditDialog by remember { mutableStateOf(false) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    var deleteForEveryone by remember { mutableStateOf(false) }
     var editVal by remember(message.id, message.messageText) { mutableStateOf(message.messageText ?: "") }
 
     Column(
@@ -841,7 +943,18 @@ fun MessageBubble(
                         }
                     }
 
-                    if (isOwnMessage && !message.isDeleted && message.messageType == "TEXT" && message.attachmentPath == null) {
+                    val copyableText = message.messageText.orEmpty()
+                    if (copyableText.isNotBlank() && !message.isDeleted) {
+                        Button(
+                            onClick = {
+                                clipboardManager.setText(AnnotatedString(copyableText))
+                                showOptions = false
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Copy text") }
+                    }
+                    if (isOwnMessage && !message.isDeleted && message.messageType == "TEXT" && message.attachmentPath == null &&
+                        System.currentTimeMillis() - message.createdAt <= 24 * 60 * 60 * 1000L) {
                         Divider()
                         Button(
                             onClick = {
@@ -856,7 +969,7 @@ fun MessageBubble(
                     if (isOwnMessage && !message.isDeleted) {
                         Button(
                             onClick = {
-                                onDelete()
+                                showDeleteDialog = true
                                 showOptions = false
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
@@ -868,6 +981,51 @@ fun MessageBubble(
             confirmButton = {
                 TextButton(onClick = { showOptions = false }) {
                     Text("Close")
+                }
+            }
+        )
+    }
+
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            title = { Text("Delete message") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = if (message.chatId != null) {
+                            "Leave unchecked to delete it only for you. Tick to delete it for everyone."
+                        } else {
+                            "Tick to delete this message for everyone in the group. Leave unchecked to delete it only for you."
+                        }
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Checkbox(
+                            checked = deleteForEveryone,
+                            onCheckedChange = { deleteForEveryone = it }
+                        )
+                        Text("Delete for everyone")
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDelete(deleteForEveryone)
+                        deleteForEveryone = false
+                        showDeleteDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = false }) {
+                    Text("Cancel")
                 }
             }
         )

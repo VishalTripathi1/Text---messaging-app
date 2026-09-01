@@ -8,9 +8,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.Gson
 import com.messaging.data.datasource.local.ChatDao
+import com.messaging.data.datasource.local.MessageDao
 import com.messaging.data.datasource.remote.WebSocketClient
 import com.messaging.data.model.WebSocketMessage
 import com.messaging.data.model.request.MessageRequest
+import com.messaging.data.model.response.GroupResponse
+import com.messaging.data.model.response.UserResponse
 import com.messaging.domain.entity.Message
 import com.messaging.domain.repository.ChatRepository
 import com.messaging.util.TokenManager
@@ -31,6 +34,7 @@ import kotlinx.coroutines.Job
 class ChatViewModel @Inject constructor(
     private val chatRepository: ChatRepository,
     private val chatDao: ChatDao,
+    private val messageDao: MessageDao,
     private val webSocketClient: WebSocketClient,
     private val tokenManager: TokenManager,
     private val gson: Gson,
@@ -59,6 +63,11 @@ class ChatViewModel @Inject constructor(
 
     private val _otherUserBio = MutableStateFlow<String?>(null)
     val otherUserBio: StateFlow<String?> = _otherUserBio
+
+    private val _groupDetails = MutableStateFlow<GroupResponse?>(null)
+    val groupDetails: StateFlow<GroupResponse?> = _groupDetails
+    private val _contacts = MutableStateFlow<List<UserResponse>>(emptyList())
+    val contacts: StateFlow<List<UserResponse>> = _contacts
 
     val accessToken: StateFlow<String?> = tokenManager.accessToken
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
@@ -122,6 +131,14 @@ class ChatViewModel @Inject constructor(
                     otherUserId = null
                     _otherUserDisplayName.value = chat.groupName ?: "Group Chat"
                     _otherUserStatus.value = chat.groupDescription ?: "Group conversation"
+                    viewModelScope.launch {
+                        chatRepository.getGroupDetails(-chatId).onSuccess { _groupDetails.value = it }
+                        chatRepository.getContacts().onSuccess { users ->
+                            _contacts.value = users.map { user ->
+                                UserResponse(user.id, user.username, user.email, user.displayName, user.bio, user.profilePictureUrl, user.status, user.lastSeen)
+                            }
+                        }
+                    }
                 } else {
                     otherUserId = chat.otherUserId
                     _otherUserDisplayName.value = chat.otherDisplayName ?: ""
@@ -337,9 +354,46 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    fun deleteMessage(messageId: Long) {
+    fun deleteMessage(messageId: Long, deleteForEveryone: Boolean = false) {
         viewModelScope.launch {
-            chatRepository.deleteMessage(messageId)
+            if (deleteForEveryone) {
+                chatRepository.deleteMessage(messageId)
+                return@launch
+            }
+
+            val localMessage = messageDao.getMessageById(messageId) ?: return@launch
+            val updated = localMessage.copy(
+                isDeleted = true,
+                messageText = "This message was deleted",
+                attachmentPath = null,
+                attachmentFileName = null,
+                attachmentFileType = null,
+                attachmentFileSize = null
+            )
+            messageDao.insertMessage(updated)
+
+            if (localMessage.chatId != null) {
+                chatDao.markLastMessageDeleted(localMessage.chatId, localMessage.senderId)
+            }
+            if (localMessage.groupId != null) {
+                chatDao.markLastMessageDeleted(-localMessage.groupId, localMessage.senderId)
+            }
+        }
+    }
+
+    fun addGroupMembers(userIds: List<Long>) {
+        if (chatId >= 0 || userIds.isEmpty()) return
+        viewModelScope.launch {
+            chatRepository.addGroupMembers(-chatId, userIds)
+                .onSuccess { chatRepository.getGroupDetails(-chatId).onSuccess { _groupDetails.value = it } }
+        }
+    }
+
+    fun removeGroupMember(userId: Long) {
+        if (chatId >= 0) return
+        viewModelScope.launch {
+            chatRepository.removeGroupMember(-chatId, userId)
+                .onSuccess { chatRepository.getGroupDetails(-chatId).onSuccess { _groupDetails.value = it } }
         }
     }
 
@@ -366,6 +420,25 @@ class ChatViewModel @Inject constructor(
 
     private val _searchResults = MutableStateFlow<List<Message>>(emptyList())
     val searchResults: StateFlow<List<Message>> = _searchResults
+
+    private val _isBlocked = MutableStateFlow(false)
+    val isBlocked: StateFlow<Boolean> = _isBlocked
+
+    fun toggleBlockUser() {
+        _isBlocked.value = !_isBlocked.value
+    }
+
+    fun clearChat() {
+        viewModelScope.launch {
+            chatRepository.clearChat(chatId)
+        }
+    }
+
+    fun deleteChat() {
+        viewModelScope.launch {
+            chatRepository.deleteChat(chatId)
+        }
+    }
 
     fun searchMessages(query: String) {
         _searchQuery.value = query

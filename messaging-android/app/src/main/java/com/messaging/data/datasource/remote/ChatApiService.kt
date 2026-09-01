@@ -77,6 +77,18 @@ interface ChatApiService {
         @Path("groupId") groupId: Long
     ): Response<GroupResponse>
 
+    @POST("v1/groups/{groupId}/members")
+    suspend fun addGroupMembers(
+        @Path("groupId") groupId: Long,
+        @Body userIds: List<Long>
+    ): Response<Unit>
+
+    @DELETE("v1/groups/{groupId}/members/{userId}")
+    suspend fun removeGroupMember(
+        @Path("groupId") groupId: Long,
+        @Path("userId") userId: Long
+    ): Response<Unit>
+
     @GET("v1/chats/group/{groupId}/messages")
     suspend fun getGroupMessages(
         @Path("groupId") groupId: Long,
@@ -124,6 +136,16 @@ interface ChatApiService {
         @Path("chatId") chatId: Long,
         @Query("archived") archived: Boolean
     ): Response<ChatResponse>
+
+    @DELETE("v1/chats/{chatId}")
+    suspend fun deleteChat(
+        @Path("chatId") chatId: Long
+    ): Response<Unit>
+
+    @DELETE("v1/chats/{chatId}/messages")
+    suspend fun clearChat(
+        @Path("chatId") chatId: Long
+    ): Response<Unit>
 
     @GET("v1/chats/search")
     suspend fun searchMessages(
