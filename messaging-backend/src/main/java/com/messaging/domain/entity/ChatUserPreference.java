@@ -53,7 +53,7 @@ public class ChatUserPreference {
 
     @Column(name = "is_deleted", nullable = false)
     @Builder.Default
-    private Boolean isDeleted = false;
+    private Boolean deleted = false;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)

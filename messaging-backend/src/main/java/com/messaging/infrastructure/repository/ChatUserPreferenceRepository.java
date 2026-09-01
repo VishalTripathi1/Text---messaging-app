@@ -29,7 +29,7 @@ public interface ChatUserPreferenceRepository extends JpaRepository<ChatUserPref
      * preference row - the common case - are simply absent, so callers must treat a missing chat as
      * neither pinned, nor archived, nor cleared, nor deleted. See MessageServiceImpl.mapToChatResponses.
      */
-    @Query("SELECT p.chat.id, p.isPinned, p.isArchived, p.isCleared, p.isDeleted FROM ChatUserPreference p " +
+    @Query("SELECT p.chat.id, p.isPinned, p.isArchived, p.isCleared, p.deleted FROM ChatUserPreference p " +
            "WHERE p.user.id = :userId AND p.chat.id IN :chatIds")
     List<Object[]> findPreferenceRowsByUserIdAndChatIds(@Param("userId") Long userId,
                                                        @Param("chatIds") Collection<Long> chatIds);

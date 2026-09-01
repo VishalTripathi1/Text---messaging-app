@@ -90,7 +90,7 @@ public interface ChatRepository extends JpaRepository<Chat, Long> {
            "(c.user1.id = :userId OR c.user2.id = :userId) AND " +
            "COALESCE(p.isArchived, false) = false AND " +
            "COALESCE(p.isCleared, false) = false AND " +
-           "COALESCE(p.isDeleted, false) = false AND " +
+           "COALESCE(p.deleted, false) = false AND " +
            "EXISTS (SELECT 1 FROM Message m WHERE m.chat = c) " +
            "ORDER BY c.lastMessageAt DESC")
     Page<Chat> findUserChatsExcludingArchived(@Param("userId") Long userId, Pageable pageable);
@@ -109,7 +109,7 @@ public interface ChatRepository extends JpaRepository<Chat, Long> {
 
     @Query("SELECT c FROM Chat c JOIN ChatUserPreference p ON p.chat = c WHERE " +
            "(c.user1.id = :userId OR c.user2.id = :userId) AND " +
-           "p.user.id = :userId AND p.isDeleted = true " +
+           "p.user.id = :userId AND p.deleted = true " +
            "ORDER BY c.lastMessageAt DESC")
     Page<Chat> findDeletedUserChats(@Param("userId") Long userId, Pageable pageable);
 

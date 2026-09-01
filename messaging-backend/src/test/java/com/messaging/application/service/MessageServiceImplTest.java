@@ -3,6 +3,7 @@ package com.messaging.application.service;
 import com.messaging.domain.entity.Group;
 import com.messaging.domain.entity.GroupMember;
 import com.messaging.domain.entity.User;
+import com.messaging.domain.entity.Chat;
 import com.messaging.infrastructure.repository.*;
 import com.messaging.presentation.exception.BadRequestException;
 import org.junit.jupiter.api.Test;
@@ -45,13 +46,28 @@ class MessageServiceImplTest {
         User admin = User.builder().id(adminId).username("admin").build();
         Group group = Group.builder().id(groupId).groupName("Ops").createdBy(creator).build();
         GroupMember adminMembership = GroupMember.builder().group(group).user(admin).role(GroupMember.MemberRole.ADMIN).build();
+        Chat chat = Chat.builder().id(groupId)
+                .user1(creator)
+                .user2(admin)
+                .build();
 
         when(groupRepository.findById(groupId)).thenReturn(Optional.of(group));
+        when(chatRepository.findById(groupId)).thenReturn(Optional.of(chat));
         when(groupMemberRepository.findByGroupIdAndUserId(groupId, adminId)).thenReturn(Optional.of(adminMembership));
+        when(chatUserPreferenceRepository.findByChatIdAndUserId(groupId, adminId)).thenReturn(Optional.empty());
+        when(userRepository.getReferenceById(adminId)).thenReturn(admin);
 
         assertDoesNotThrow(() -> messageService.deleteChat(adminId, -groupId));
 
-        verify(messageRepository).deleteByGroupId(groupId);
-        verify(groupRepository).delete(group);
+        // Should create and save a ChatUserPreference with deleted=true
+        verify(chatUserPreferenceRepository).findByChatIdAndUserId(groupId, adminId);
+        verify(chatUserPreferenceRepository).save(argThat(preference ->
+            preference.getChat().getId().equals(groupId) &&
+            preference.getUser().getId().equals(adminId) &&
+            preference.getDeleted() == true));
+
+        // Should NOT delete messages or group
+        verify(messageRepository, never()).deleteByGroupId(anyLong());
+        verify(groupRepository, never()).delete(any());
     }
 }

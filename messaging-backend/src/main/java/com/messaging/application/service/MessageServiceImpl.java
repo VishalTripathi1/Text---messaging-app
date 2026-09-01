@@ -488,16 +488,20 @@ public class MessageServiceImpl implements MessageService {
             unreadByChatId.put((Long) row[0], ((Number) row[1]).intValue());
         }
 
-        // Pin/archive state is per-user (see ChatUserPreference) - a chat pinned or archived by
-        // one participant must not affect what the other participant sees. Absence of a
-        // preference row (the common case) means "not pinned, not archived", and the batch query
-        // simply returns no row for those chats.
+        // Pin/archive/clear/delete state is per-user (see ChatUserPreference) - a chat pinned, archived,
+// cleared or deleted by one participant must not affect what the other participant sees.
+// Absence of a preference row (the common case) means "not pinned, not archived, not cleared, not deleted",
+// and the batch query simply returns no row for those chats.
         Map<Long, Boolean> pinnedByChatId = new java.util.HashMap<>();
         Map<Long, Boolean> archivedByChatId = new java.util.HashMap<>();
+        Map<Long, Boolean> clearedByChatId = new java.util.HashMap<>();
+        Map<Long, Boolean> deletedByChatId = new java.util.HashMap<>();
         for (Object[] row : chatUserPreferenceRepository
                 .findPreferenceRowsByUserIdAndChatIds(currentUserId, chatIds)) {
             pinnedByChatId.put((Long) row[0], Boolean.TRUE.equals(row[1]));
             archivedByChatId.put((Long) row[0], Boolean.TRUE.equals(row[2]));
+            clearedByChatId.put((Long) row[0], Boolean.TRUE.equals(row[3]));
+            deletedByChatId.put((Long) row[0], Boolean.TRUE.equals(row[4]));
         }
 
         List<ChatResponse> responses = new java.util.ArrayList<>(chats.size());
@@ -513,6 +517,8 @@ public class MessageServiceImpl implements MessageService {
                     .lastMessage(lastMessageDto)
                     .isPinned(Boolean.TRUE.equals(pinnedByChatId.get(chat.getId())))
                     .isArchived(Boolean.TRUE.equals(archivedByChatId.get(chat.getId())))
+                    .isCleared(Boolean.TRUE.equals(clearedByChatId.get(chat.getId())))
+                    .isDeleted(Boolean.TRUE.equals(deletedByChatId.get(chat.getId())))
                     .unreadCount(unreadByChatId.getOrDefault(chat.getId(), 0))
                     .build());
         }
@@ -969,7 +975,7 @@ public class MessageServiceImpl implements MessageService {
                                     .orElseThrow(() -> new ResourceNotFoundException("Group not found: " + groupId)))
                             .user(userRepository.getReferenceById(userId))
                             .build());
-            preference.setIsDeleted(true);
+            preference.setDeleted(true);
             chatUserPreferenceRepository.save(preference);
             return;
         }
@@ -983,7 +989,7 @@ public class MessageServiceImpl implements MessageService {
                         .chat(chat)
                         .user(userRepository.getReferenceById(userId))
                         .build());
-        preference.setIsDeleted(true);
+        preference.setDeleted(true);
         chatUserPreferenceRepository.save(preference);
     }
 
