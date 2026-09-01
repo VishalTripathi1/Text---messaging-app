@@ -31,9 +31,8 @@ public class ChatUserPreference {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "chat_id", nullable = false)
-    private Chat chat;
+    @Column(name = "chat_id", nullable = false)
+    private Long chatId;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id", nullable = false)

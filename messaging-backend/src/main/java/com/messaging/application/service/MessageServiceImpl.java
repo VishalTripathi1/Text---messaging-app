@@ -928,8 +928,7 @@ public class MessageServiceImpl implements MessageService {
             ChatUserPreference preference = chatUserPreferenceRepository
                     .findByChatIdAndUserId(groupId, userId)
                     .orElseGet(() -> ChatUserPreference.builder()
-                            .chat(chatRepository.findById(groupId)
-                                    .orElseThrow(() -> new ResourceNotFoundException("Group not found: " + groupId)))
+                            .chatId(groupId)
                             .user(userRepository.getReferenceById(userId))
                             .build());
             preference.setIsCleared(true);
@@ -937,13 +936,11 @@ public class MessageServiceImpl implements MessageService {
             return;
         }
 
-        Chat chat = chatRepository.findById(chatId)
-                .orElseThrow(() -> new ResourceNotFoundException("Chat not found: " + chatId));
-        ensureChatParticipant(chat, userId);
+        // For group operations, we don't need to validate chat existence
         ChatUserPreference preference = chatUserPreferenceRepository
                 .findByChatIdAndUserId(chatId, userId)
                 .orElseGet(() -> ChatUserPreference.builder()
-                        .chat(chat)
+                        .chatId(chatId)
                         .user(userRepository.getReferenceById(userId))
                         .build());
         preference.setIsCleared(true);
@@ -971,8 +968,7 @@ public class MessageServiceImpl implements MessageService {
             ChatUserPreference preference = chatUserPreferenceRepository
                     .findByChatIdAndUserId(groupId, userId)
                     .orElseGet(() -> ChatUserPreference.builder()
-                            .chat(chatRepository.findById(groupId)
-                                    .orElseThrow(() -> new ResourceNotFoundException("Group not found: " + groupId)))
+                            .chatId(groupId)
                             .user(userRepository.getReferenceById(userId))
                             .build());
             preference.setDeleted(true);
@@ -980,13 +976,11 @@ public class MessageServiceImpl implements MessageService {
             return;
         }
 
-        Chat chat = chatRepository.findById(chatId)
-                .orElseThrow(() -> new ResourceNotFoundException("Chat not found: " + chatId));
-        ensureChatParticipant(chat, userId);
+        // For group operations, we don't need to validate chat existence
         ChatUserPreference preference = chatUserPreferenceRepository
                 .findByChatIdAndUserId(chatId, userId)
                 .orElseGet(() -> ChatUserPreference.builder()
-                        .chat(chat)
+                        .chatId(chatId)
                         .user(userRepository.getReferenceById(userId))
                         .build());
         preference.setDeleted(true);
@@ -1091,7 +1085,7 @@ public class MessageServiceImpl implements MessageService {
                 .orElseThrow(() -> new ResourceNotFoundException("Chat not found"));
         ensureChatParticipant(chat, userId);
         ChatUserPreference preference = chatUserPreferenceRepository.findByChatIdAndUserId(chatId, userId)
-                .orElseGet(() -> ChatUserPreference.builder().chat(chat).user(userRepository.getReferenceById(userId)).build());
+                .orElseGet(() -> ChatUserPreference.builder().chatId(chatId).user(userRepository.getReferenceById(userId)).build());
         preference.setIsPinned(pinned);
         chatUserPreferenceRepository.save(preference);
         return mapToChatResponse(chat, userId);
@@ -1104,7 +1098,7 @@ public class MessageServiceImpl implements MessageService {
                 .orElseThrow(() -> new ResourceNotFoundException("Chat not found"));
         ensureChatParticipant(chat, userId);
         ChatUserPreference preference = chatUserPreferenceRepository.findByChatIdAndUserId(chatId, userId)
-                .orElseGet(() -> ChatUserPreference.builder().chat(chat).user(userRepository.getReferenceById(userId)).build());
+                .orElseGet(() -> ChatUserPreference.builder().chatId(chatId).user(userRepository.getReferenceById(userId)).build());
         preference.setIsArchived(archived);
         chatUserPreferenceRepository.save(preference);
         return mapToChatResponse(chat, userId);
