@@ -108,6 +108,22 @@ public class MessageServiceImpl implements MessageService {
     }
 
     @Override
+    @Transactional
+    public List<ChatResponse> getClearedChats(Long userId, int page, int size) {
+        Pageable pageable = PageRequest.of(page, size);
+        return mapToChatResponses(
+                chatRepository.findClearedUserChats(userId, pageable).getContent(), userId);
+    }
+
+    @Override
+    @Transactional
+    public List<ChatResponse> getDeletedChats(Long userId, int page, int size) {
+        Pageable pageable = PageRequest.of(page, size);
+        return mapToChatResponses(
+                chatRepository.findDeletedUserChats(userId, pageable).getContent(), userId);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public boolean isBlocked(Long blockerId, Long targetUserId) {
         if (blockerId == null || targetUserId == null || blockerId.equals(targetUserId)) {
