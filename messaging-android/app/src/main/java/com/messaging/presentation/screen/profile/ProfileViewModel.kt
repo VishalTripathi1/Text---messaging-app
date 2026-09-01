@@ -63,7 +63,7 @@ class ProfileViewModel @Inject constructor(
             userRepository.updateProfile(
                 displayName = displayName.ifBlank { null },
                 bio = bio.ifBlank { null },
-                profilePictureUrl = profilePictureUrl.ifBlank { null }
+                profilePictureUrl = if (profilePictureUrl.isBlank()) "" else profilePictureUrl
             )
                 .onSuccess {
                     _profile.value = it

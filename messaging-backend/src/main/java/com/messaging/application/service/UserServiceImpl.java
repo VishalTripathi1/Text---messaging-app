@@ -105,7 +105,9 @@ public class UserServiceImpl implements UserService {
             profile.setBio(request.getBio());
         }
         if (request.getProfilePictureUrl() != null) {
-            profile.setProfilePictureUrl(request.getProfilePictureUrl());
+            profile.setProfilePictureUrl(request.getProfilePictureUrl().isBlank()
+                    ? null
+                    : request.getProfilePictureUrl());
         }
 
         UserProfile savedProfile = userProfileRepository.save(profile);

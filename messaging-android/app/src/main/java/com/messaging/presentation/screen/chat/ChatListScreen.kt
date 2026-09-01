@@ -91,7 +91,8 @@ fun ChatListScreen(
             val matchesFilter = when (selectedFilter) {
                 "Unread" -> chat.unreadCount > 0
                 "Groups" -> chat.isGroup
-                else -> true
+                "Archived" -> chat.isArchived
+                else -> !chat.isArchived
             }
             matchesSearch && matchesFilter
         }
@@ -156,7 +157,7 @@ fun ChatListScreen(
                     )
                 }
                 Row(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("All", "Unread", "Groups").forEach { filter ->
+                    listOf("All", "Unread", "Groups", "Archived").forEach { filter ->
                         FilterChip(
                             selected = selectedFilter == filter,
                             onClick = { selectedFilter = filter },
@@ -171,7 +172,11 @@ fun ChatListScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = if (searchQuery.isBlank()) "Your inbox is quiet" else "No conversations found",
+                        text = when {
+                            searchQuery.isNotBlank() -> "No conversations found"
+                            selectedFilter == "Archived" -> "No archived chats yet"
+                            else -> "Your inbox is quiet"
+                        },
                         color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
                         style = MaterialTheme.typography.bodyLarge
                     )
