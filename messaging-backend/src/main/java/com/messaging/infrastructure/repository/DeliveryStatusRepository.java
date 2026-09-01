@@ -2,6 +2,9 @@ package com.messaging.infrastructure.repository;
 
 import com.messaging.domain.entity.DeliveryStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -14,7 +17,7 @@ import java.util.Optional;
 public interface DeliveryStatusRepository extends JpaRepository<DeliveryStatus, Long> {
     Optional<DeliveryStatus> findByMessageIdAndRecipientId(Long messageId, Long recipientId);
 
-    @org.springframework.data.jpa.repository.Modifying
+    @Modifying
     @Query("DELETE FROM DeliveryStatus ds WHERE ds.message.id IN :messageIds")
     void deleteByMessageIds(@Param("messageIds") java.util.Collection<Long> messageIds);
 
