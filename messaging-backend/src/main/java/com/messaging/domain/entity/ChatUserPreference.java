@@ -47,6 +47,14 @@ public class ChatUserPreference {
     @Builder.Default
     private Boolean isArchived = false;
 
+    @Column(name = "is_cleared", nullable = false)
+    @Builder.Default
+    private Boolean isCleared = false;
+
+    @Column(name = "is_deleted", nullable = false)
+    @Builder.Default
+    private Boolean isDeleted = false;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;

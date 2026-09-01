@@ -18,5 +18,7 @@ public class ChatResponse {
     private MessageResponse lastMessage;
     private Boolean isPinned;
     private Boolean isArchived;
+    private Boolean isCleared;
+    private Boolean isDeleted;
     private Integer unreadCount;
 }

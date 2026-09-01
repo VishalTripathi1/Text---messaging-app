@@ -64,6 +64,26 @@ public class ChatController {
         return ResponseEntity.ok(chats);
     }
 
+    @GetMapping("/cleared")
+    public ResponseEntity<List<ChatResponse>> getClearedChats(
+            @AuthenticationPrincipal CustomUserPrincipal principal,
+            @RequestParam(value = "page", defaultValue = "0") int page,
+            @RequestParam(value = "size", defaultValue = "20") int size
+    ) {
+        List<ChatResponse> chats = messageService.getClearedChats(principal.getId(), page, size);
+        return ResponseEntity.ok(chats);
+    }
+
+    @GetMapping("/deleted")
+    public ResponseEntity<List<ChatResponse>> getDeletedChats(
+            @AuthenticationPrincipal CustomUserPrincipal principal,
+            @RequestParam(value = "page", defaultValue = "0") int page,
+            @RequestParam(value = "size", defaultValue = "20") int size
+    ) {
+        List<ChatResponse> chats = messageService.getDeletedChats(principal.getId(), page, size);
+        return ResponseEntity.ok(chats);
+    }
+
     @PutMapping("/{chatId}/block")
     public ResponseEntity<Void> blockChat(
             @AuthenticationPrincipal CustomUserPrincipal principal,

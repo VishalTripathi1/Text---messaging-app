@@ -18,7 +18,11 @@ public interface MessageService {
     List<ChatResponse> getUserChats(Long userId, int page, int size);
 
     List<ChatResponse> getArchivedChats(Long userId, int page, int size);
-    
+
+    List<ChatResponse> getClearedChats(Long userId, int page, int size);
+
+    List<ChatResponse> getDeletedChats(Long userId, int page, int size);
+
     MessageResponse sendMessage(Long senderId, MessageRequest request);
     
     List<MessageResponse> getChatMessages(Long userId, Long chatId, int page, int size);

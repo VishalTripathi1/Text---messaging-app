@@ -108,6 +108,22 @@ public class MessageServiceImpl implements MessageService {
     }
 
     @Override
+    @Transactional
+    public List<ChatResponse> getClearedChats(Long userId, int page, int size) {
+        Pageable pageable = PageRequest.of(page, size);
+        return mapToChatResponses(
+                chatRepository.findClearedUserChats(userId, pageable).getContent(), userId);
+    }
+
+    @Override
+    @Transactional
+    public List<ChatResponse> getDeletedChats(Long userId, int page, int size) {
+        Pageable pageable = PageRequest.of(page, size);
+        return mapToChatResponses(
+                chatRepository.findDeletedUserChats(userId, pageable).getContent(), userId);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public boolean isBlocked(Long blockerId, Long targetUserId) {
         if (blockerId == null || targetUserId == null || blockerId.equals(targetUserId)) {
@@ -472,16 +488,20 @@ public class MessageServiceImpl implements MessageService {
             unreadByChatId.put((Long) row[0], ((Number) row[1]).intValue());
         }
 
-        // Pin/archive state is per-user (see ChatUserPreference) - a chat pinned or archived by
-        // one participant must not affect what the other participant sees. Absence of a
-        // preference row (the common case) means "not pinned, not archived", and the batch query
-        // simply returns no row for those chats.
+        // Pin/archive/clear/delete state is per-user (see ChatUserPreference) - these preferences
+        // must not affect what other participants see. Absence of a preference row (the common case)
+        // means "not pinned, not archived, not cleared, not deleted", and the batch query simply
+        // returns no row for those chats.
         Map<Long, Boolean> pinnedByChatId = new java.util.HashMap<>();
         Map<Long, Boolean> archivedByChatId = new java.util.HashMap<>();
+        Map<Long, Boolean> clearedByChatId = new java.util.HashMap<>();
+        Map<Long, Boolean> deletedByChatId = new java.util.HashMap<>();
         for (Object[] row : chatUserPreferenceRepository
                 .findPreferenceRowsByUserIdAndChatIds(currentUserId, chatIds)) {
             pinnedByChatId.put((Long) row[0], Boolean.TRUE.equals(row[1]));
             archivedByChatId.put((Long) row[0], Boolean.TRUE.equals(row[2]));
+            clearedByChatId.put((Long) row[0], Boolean.TRUE.equals(row[3]));
+            deletedByChatId.put((Long) row[0], Boolean.TRUE.equals(row[4]));
         }
 
         List<ChatResponse> responses = new java.util.ArrayList<>(chats.size());
@@ -497,6 +517,8 @@ public class MessageServiceImpl implements MessageService {
                     .lastMessage(lastMessageDto)
                     .isPinned(Boolean.TRUE.equals(pinnedByChatId.get(chat.getId())))
                     .isArchived(Boolean.TRUE.equals(archivedByChatId.get(chat.getId())))
+                    .isCleared(Boolean.TRUE.equals(clearedByChatId.get(chat.getId())))
+                    .isDeleted(Boolean.TRUE.equals(deletedByChatId.get(chat.getId())))
                     .unreadCount(unreadByChatId.getOrDefault(chat.getId(), 0))
                     .build());
         }
@@ -903,18 +925,33 @@ public class MessageServiceImpl implements MessageService {
             if (groupMemberRepository.findByGroupIdAndUserId(groupId, userId).isEmpty()) {
                 throw new BadRequestException("You are not a member of this group");
             }
-            deleteMessagesInGroup(groupId);
+            ChatUserPreference preference = chatUserPreferenceRepository
+                    .findByChatIdAndUserId(groupId, userId)
+                    .orElseGet(() -> ChatUserPreference.builder()
+                            .chat(chatRepository.findById(groupId)
+                                    .orElseThrow(() -> new ResourceNotFoundException("Group not found: " + groupId)))
+                            .user(userRepository.getReferenceById(userId))
+                            .build());
+            preference.setIsCleared(true);
+            chatUserPreferenceRepository.save(preference);
             return;
         }
 
         Chat chat = chatRepository.findById(chatId)
                 .orElseThrow(() -> new ResourceNotFoundException("Chat not found: " + chatId));
         ensureChatParticipant(chat, userId);
-        deleteMessagesInChat(chatId);
-        chatUserPreferenceRepository.deleteByChatId(chatId);
-        chat.setLastMessageId(null);
-        chat.setLastMessageAt(null);
-        chatRepository.save(chat);
+        ChatUserPreference preference = chatUserPreferenceRepository
+                .findByChatIdAndUserId(chatId, userId)
+                .orElseGet(() -> ChatUserPreference.builder()
+                        .chat(chat)
+                        .user(userRepository.getReferenceById(userId))
+                        .build());
+        preference.setIsCleared(true);
+        chatUserPreferenceRepository.save(preference);
+
+        // Reset last message info for this user's view
+        // Note: We don't actually modify the chat entity here since lastMessageId/lastMessageAt
+        # are shared across all users. The UI should handle cleared chats by not showing last message.
     }
 
     @Override
@@ -928,24 +965,32 @@ public class MessageServiceImpl implements MessageService {
             Long groupId = -chatId;
             Group group = groupRepository.findById(groupId)
                     .orElseThrow(() -> new ResourceNotFoundException("Group not found: " + groupId));
-            if (!group.getCreatedBy().getId().equals(userId)) {
-                GroupMember membership = groupMemberRepository.findByGroupIdAndUserId(groupId, userId)
-                        .orElse(null);
-                if (membership == null || membership.getRole() != GroupMember.MemberRole.ADMIN) {
-                    throw new BadRequestException("Only the group creator or an admin can delete the group");
-                }
+            if (groupMemberRepository.findByGroupIdAndUserId(groupId, userId).isEmpty()) {
+                throw new BadRequestException("You are not a member of this group");
             }
-            deleteMessagesInGroup(groupId);
-            groupRepository.delete(group);
+            ChatUserPreference preference = chatUserPreferenceRepository
+                    .findByChatIdAndUserId(groupId, userId)
+                    .orElseGet(() -> ChatUserPreference.builder()
+                            .chat(chatRepository.findById(groupId)
+                                    .orElseThrow(() -> new ResourceNotFoundException("Group not found: " + groupId)))
+                            .user(userRepository.getReferenceById(userId))
+                            .build());
+            preference.setIsDeleted(true);
+            chatUserPreferenceRepository.save(preference);
             return;
         }
 
         Chat chat = chatRepository.findById(chatId)
                 .orElseThrow(() -> new ResourceNotFoundException("Chat not found: " + chatId));
         ensureChatParticipant(chat, userId);
-        deleteMessagesInChat(chatId);
-        chatUserPreferenceRepository.deleteByChatId(chatId);
-        chatRepository.delete(chat);
+        ChatUserPreference preference = chatUserPreferenceRepository
+                .findByChatIdAndUserId(chatId, userId)
+                .orElseGet(() -> ChatUserPreference.builder()
+                        .chat(chat)
+                        .user(userRepository.getReferenceById(userId))
+                        .build());
+        preference.setIsDeleted(true);
+        chatUserPreferenceRepository.save(preference);
     }
 
     private void deleteMessagesInChat(Long chatId) {
