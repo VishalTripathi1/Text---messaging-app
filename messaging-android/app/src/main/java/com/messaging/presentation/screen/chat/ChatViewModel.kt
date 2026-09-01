@@ -368,33 +368,38 @@ class ChatViewModel @Inject constructor(
         if (messageId <= 0L) return
         viewModelScope.launch {
             if (deleteForEveryone) {
-                chatRepository.deleteMessage(messageId)
+                runCatching { chatRepository.deleteMessage(messageId) }
                 return@launch
             }
 
-            val localMessage = messageDao.getMessageById(messageId)
-            if (localMessage == null || localMessage.isDeleted) {
+            val localMessage = messageDao.getMessageById(messageId) ?: return@launch
+            if (localMessage.isDeleted) {
                 return@launch
             }
-
-            val updated = localMessage.copy(
-                isDeleted = true,
-                messageText = "This message was deleted",
-                attachmentPath = null,
-                attachmentFileName = null,
-                attachmentFileType = null,
-                attachmentFileSize = null,
-                reactions = emptyList()
-            )
-            messageDao.insertMessage(updated)
 
             val conversationId = when {
                 localMessage.chatId != null -> localMessage.chatId
                 localMessage.groupId != null -> -localMessage.groupId
                 else -> null
             }
-            if (conversationId != null) {
-                chatDao.markLastMessageDeleted(conversationId, localMessage.senderId)
+
+            try {
+                val updated = localMessage.copy(
+                    isDeleted = true,
+                    messageText = "This message was deleted",
+                    attachmentPath = null,
+                    attachmentFileName = null,
+                    attachmentFileType = null,
+                    attachmentFileSize = null,
+                    reactions = emptyList()
+                )
+                messageDao.insertMessage(updated)
+
+                if (conversationId != null) {
+                    chatDao.markLastMessageDeleted(conversationId, localMessage.senderId)
+                }
+            } catch (t: Throwable) {
+                Log.e("ChatViewModel", "Failed to delete message locally", t)
             }
         }
     }

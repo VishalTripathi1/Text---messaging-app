@@ -33,6 +33,10 @@ public interface MessageService {
 
     MessageResponse deleteMessage(Long userId, Long messageId);
 
+    void clearChat(Long userId, Long chatId);
+
+    void deleteChat(Long userId, Long chatId);
+
     boolean isBlocked(Long blockerId, Long targetUserId);
 
     boolean blockUser(Long blockerId, Long targetUserId);

@@ -2,6 +2,7 @@ package com.messaging.infrastructure.repository;
 
 import com.messaging.domain.entity.ChatUserPreference;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -17,6 +18,10 @@ import java.util.Optional;
 public interface ChatUserPreferenceRepository extends JpaRepository<ChatUserPreference, Long> {
 
     Optional<ChatUserPreference> findByChatIdAndUserId(Long chatId, Long userId);
+
+    @Modifying
+    @Query("DELETE FROM ChatUserPreference p WHERE p.chat.id = :chatId")
+    void deleteByChatId(@Param("chatId") Long chatId);
 
     /**
      * This user's pin/archive flags across several chats, as {@code [chatId, isPinned, isArchived]}

@@ -229,16 +229,11 @@ fun ChatScreen(
         }
     }
 
-    val filteredMessages = remember(messages, searchQuery, isBlocked, viewModel.blockedPeerId) {
-        val visible = if (searchQuery.isBlank()) {
+    val filteredMessages = remember(messages, searchQuery) {
+        if (searchQuery.isBlank()) {
             messages
         } else {
             messages.filter { it.messageText?.contains(searchQuery, ignoreCase = true) == true }
-        }
-        if (isBlocked && viewModel.blockedPeerId != null) {
-            visible.filter { it.senderId != viewModel.blockedPeerId }
-        } else {
-            visible
         }
     }
 
@@ -368,7 +363,7 @@ fun ChatScreen(
     // history instead of at the bottom. Only animate for messages that arrive after the chat is
     // already open and settled.
     var hasScrolledToInitialPosition by remember(viewModel.chatId) { mutableStateOf(false) }
-    LaunchedEffect(filteredMessages.size) {
+    LaunchedEffect(filteredMessages.size, textState, isBlocked) {
         if (filteredMessages.isNotEmpty()) {
             if (!hasScrolledToInitialPosition) {
                 listState.scrollToItem(filteredMessages.size - 1)

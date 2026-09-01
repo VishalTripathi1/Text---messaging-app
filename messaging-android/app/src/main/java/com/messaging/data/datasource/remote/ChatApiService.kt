@@ -35,6 +35,12 @@ interface ChatApiService {
         @Query("size") size: Int
     ): Response<List<ChatResponse>>
 
+    @GET("v1/chats/archived")
+    suspend fun getArchivedChats(
+        @Query("page") page: Int,
+        @Query("size") size: Int
+    ): Response<List<ChatResponse>>
+
     @GET("v1/chats/{chatId}/messages")
     suspend fun getChatMessages(
         @Path("chatId") chatId: Long,

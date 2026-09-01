@@ -52,12 +52,14 @@ class ChatListViewModel @Inject constructor(
     fun pinChat(chatId: Long, pinned: Boolean) {
         viewModelScope.launch {
             chatRepository.togglePinChat(chatId, pinned)
+            syncChats()
         }
     }
 
     fun archiveChat(chatId: Long, archived: Boolean) {
         viewModelScope.launch {
             chatRepository.toggleArchiveChat(chatId, archived)
+            syncChats()
         }
     }
 

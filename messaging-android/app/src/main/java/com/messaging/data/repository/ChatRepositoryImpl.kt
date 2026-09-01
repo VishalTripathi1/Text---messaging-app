@@ -234,10 +234,17 @@ class ChatRepositoryImpl @Inject constructor(
     override suspend fun syncChats(): Result<Unit> = withContext(Dispatchers.IO) {
         return@withContext try {
             val privateResponse = chatApiService.getUserChats(page = 0, size = 100)
+            val archivedResponse = chatApiService.getArchivedChats(page = 0, size = 100)
             val groupsResponse = chatApiService.getUserGroups(page = 0, size = 100)
 
             val privateEntities = if (privateResponse.isSuccessful && privateResponse.body() != null) {
                 privateResponse.body()!!.map { it.toEntity() }
+            } else {
+                emptyList()
+            }
+
+            val archivedEntities = if (archivedResponse.isSuccessful && archivedResponse.body() != null) {
+                archivedResponse.body()!!.map { it.toEntity().copy(isArchived = true) }
             } else {
                 emptyList()
             }
@@ -269,13 +276,13 @@ class ChatRepositoryImpl @Inject constructor(
                 emptyList()
             }
 
-            val allEntities = privateEntities + groupEntities
+            val allEntities = privateEntities + archivedEntities + groupEntities
             if (allEntities.isNotEmpty()) {
                 chatDao.insertChats(allEntities)
             }
 
             if (privateResponse.isSuccessful) {
-                val serverPrivateIds = privateEntities.map { it.id }
+                val serverPrivateIds = (privateEntities + archivedEntities).map { it.id }
                 if (serverPrivateIds.isEmpty()) {
                     chatDao.deleteAllStalePrivateChats()
                 } else {
@@ -294,6 +301,8 @@ class ChatRepositoryImpl @Inject constructor(
 
             if (!privateResponse.isSuccessful) {
                 Result.failure(Exception(parseErrorMessage(privateResponse, "Failed to sync chats")))
+            } else if (!archivedResponse.isSuccessful) {
+                Result.failure(Exception(parseErrorMessage(archivedResponse, "Failed to sync archived chats")))
             } else if (!groupsResponse.isSuccessful) {
                 Result.failure(Exception(parseErrorMessage(groupsResponse, "Failed to sync groups")))
             } else {
@@ -1097,6 +1106,10 @@ class ChatRepositoryImpl @Inject constructor(
 
     override suspend fun deleteMessage(messageId: Long): Result<Unit> = withContext(Dispatchers.IO) {
         try {
+            val existing = messageDao.getMessageById(messageId) ?: return@withContext Result.success(Unit)
+            if (existing.isDeleted) {
+                return@withContext Result.success(Unit)
+            }
             messageDao.markMessageAsDeleted(messageId)
             val msgEntity = messageDao.getMessageById(messageId)
             if (msgEntity?.chatId != null) {
@@ -1130,6 +1143,9 @@ class ChatRepositoryImpl @Inject constructor(
             val currentUserId = tokenManager.userId.firstOrNull() ?: 0L
             val currentUsername = tokenManager.username.firstOrNull() ?: ""
             val existingEntity = messageDao.getMessageById(messageId)
+            if (existingEntity?.isDeleted == true) {
+                return@withContext Result.success(Unit)
+            }
             if (existingEntity != null) {
                 val currentReactions = existingEntity.reactions?.filterNot { it.userId == currentUserId } ?: emptyList()
                 val newReactionObj = com.messaging.domain.entity.Reaction(
@@ -1219,6 +1235,11 @@ class ChatRepositoryImpl @Inject constructor(
 
     override suspend fun togglePinChat(chatId: Long, pinned: Boolean): Result<Unit> = withContext(Dispatchers.IO) {
         try {
+            if (chatId < 0) {
+                val existing = chatDao.getChatById(chatId) ?: return@withContext Result.failure(Exception("Chat not found"))
+                chatDao.insertChat(existing.copy(isPinned = pinned))
+                return@withContext Result.success(Unit)
+            }
             val response = chatApiService.pinChat(chatId, pinned)
             val body = response.body()
             if (response.isSuccessful && body != null) {
@@ -1234,6 +1255,11 @@ class ChatRepositoryImpl @Inject constructor(
 
     override suspend fun toggleArchiveChat(chatId: Long, archived: Boolean): Result<Unit> = withContext(Dispatchers.IO) {
         try {
+            if (chatId < 0) {
+                val existing = chatDao.getChatById(chatId) ?: return@withContext Result.failure(Exception("Chat not found"))
+                chatDao.insertChat(existing.copy(isArchived = archived))
+                return@withContext Result.success(Unit)
+            }
             val response = chatApiService.archiveChat(chatId, archived)
             val body = response.body()
             if (response.isSuccessful && body != null) {

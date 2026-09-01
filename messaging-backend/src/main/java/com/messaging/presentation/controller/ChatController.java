@@ -213,6 +213,24 @@ public class ChatController {
         return ResponseEntity.ok(message);
     }
 
+    @DeleteMapping("/{chatId}/messages")
+    public ResponseEntity<Void> clearChat(
+            @AuthenticationPrincipal CustomUserPrincipal principal,
+            @PathVariable("chatId") Long chatId
+    ) {
+        messageService.clearChat(principal.getId(), chatId);
+        return ResponseEntity.ok().build();
+    }
+
+    @DeleteMapping("/{chatId}")
+    public ResponseEntity<Void> deleteChat(
+            @AuthenticationPrincipal CustomUserPrincipal principal,
+            @PathVariable("chatId") Long chatId
+    ) {
+        messageService.deleteChat(principal.getId(), chatId);
+        return ResponseEntity.ok().build();
+    }
+
     /**
      * Broadcasts a message change to everyone else in the conversation.
      *

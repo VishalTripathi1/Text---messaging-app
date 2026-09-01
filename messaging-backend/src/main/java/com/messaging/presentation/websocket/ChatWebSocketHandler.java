@@ -137,12 +137,19 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             }
 
             if (recipientId != null) {
+                boolean recipientBlockedSender = messageService.isBlocked(recipientId, wsMessage.getSenderId());
+                if (recipientBlockedSender) {
+                    String jsonForSender = objectMapper.writeValueAsString(outbound);
+                    sendToUser(wsMessage.getSenderId(), jsonForSender);
+                    return;
+                }
+
                 outbound.setRecipientId(recipientId);
                 String jsonForRecipient = objectMapper.writeValueAsString(outbound);
                 boolean delivered = sendToUser(recipientId, jsonForRecipient);
                 if (delivered) {
                     messageService.markMessageAsDelivered(recipientId, response.getId());
-                    
+
                     WebSocketMessage deliveryMsg = WebSocketMessage.builder()
                             .type("DELIVERY_STATUS")
                             .senderId(recipientId)
@@ -153,7 +160,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
                     sendToUser(wsMessage.getSenderId(), objectMapper.writeValueAsString(deliveryMsg));
                 }
             }
-            
+
             // Acknowledge to sender
             String jsonForSender = objectMapper.writeValueAsString(outbound);
             sendToUser(wsMessage.getSenderId(), jsonForSender);

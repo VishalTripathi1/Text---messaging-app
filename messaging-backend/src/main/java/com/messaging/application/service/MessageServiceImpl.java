@@ -169,6 +169,21 @@ public class MessageServiceImpl implements MessageService {
             }
         }
 
+        if (request.getRecipientId() != null && blockedUserRepository.existsByBlockerIdAndBlockedId(request.getRecipientId(), senderId)) {
+            throw new BadRequestException("This user has blocked you");
+        }
+
+        if (request.getChatId() != null) {
+            Chat chat = chatRepository.findById(request.getChatId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Chat not found"));
+            if (chat.getUser1() != null && chat.getUser2() != null) {
+                Long otherUserId = chat.getUser1().getId().equals(senderId) ? chat.getUser2().getId() : chat.getUser1().getId();
+                if (blockedUserRepository.existsByBlockerIdAndBlockedId(otherUserId, senderId)) {
+                    throw new BadRequestException("This user has blocked you");
+                }
+            }
+        }
+
         // No validation existed at all: empty/blank text messages were accepted and there was
         // no length cap (a client bug or malicious request could store an arbitrarily large
         // blob). messageType itself is already a strongly-typed enum (Message.MessageType), so
@@ -872,6 +887,61 @@ public class MessageServiceImpl implements MessageService {
         List<Long> recipientIds = otherParticipantIds(message, userId);
         pushMessageChange(message, userId, recipientIds, "MESSAGE_DELETED", "This message was deleted");
         return response;
+    }
+
+    @Override
+    @Transactional
+    public void clearChat(Long userId, Long chatId) {
+        if (chatId == null || chatId == 0L) {
+            throw new BadRequestException("Invalid chat id");
+        }
+
+        if (chatId < 0) {
+            Long groupId = -chatId;
+            Group group = groupRepository.findById(groupId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Group not found: " + groupId));
+            if (groupMemberRepository.findByGroupIdAndUserId(groupId, userId).isEmpty()) {
+                throw new BadRequestException("You are not a member of this group");
+            }
+            messageRepository.deleteByGroupId(groupId);
+            return;
+        }
+
+        Chat chat = chatRepository.findById(chatId)
+                .orElseThrow(() -> new ResourceNotFoundException("Chat not found: " + chatId));
+        ensureChatParticipant(chat, userId);
+        messageRepository.deleteByChatId(chatId);
+        chatUserPreferenceRepository.deleteByChatId(chatId);
+        chat.setLastMessageId(null);
+        chat.setLastMessageAt(null);
+        chatRepository.save(chat);
+    }
+
+    @Override
+    @Transactional
+    public void deleteChat(Long userId, Long chatId) {
+        if (chatId == null || chatId == 0L) {
+            throw new BadRequestException("Invalid chat id");
+        }
+
+        if (chatId < 0) {
+            Long groupId = -chatId;
+            Group group = groupRepository.findById(groupId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Group not found: " + groupId));
+            if (!group.getCreatedBy().getId().equals(userId)) {
+                throw new BadRequestException("Only the group creator can delete the group");
+            }
+            messageRepository.deleteByGroupId(groupId);
+            groupRepository.delete(group);
+            return;
+        }
+
+        Chat chat = chatRepository.findById(chatId)
+                .orElseThrow(() -> new ResourceNotFoundException("Chat not found: " + chatId));
+        ensureChatParticipant(chat, userId);
+        messageRepository.deleteByChatId(chatId);
+        chatUserPreferenceRepository.deleteByChatId(chatId);
+        chatRepository.delete(chat);
     }
 
     @Override
