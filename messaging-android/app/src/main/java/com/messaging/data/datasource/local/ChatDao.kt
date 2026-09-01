@@ -27,6 +27,9 @@ interface ChatDao {
     @Query("SELECT * FROM chats WHERE id = :chatId")
     fun getChatById(chatId: Long): ChatEntity?
 
+    @Query("SELECT * FROM chats WHERE otherUserId = :userId LIMIT 1")
+    fun getChatByOtherUserId(userId: Long): ChatEntity?
+
     @Query("SELECT * FROM chats WHERE id = :chatId")
     fun getChatByIdFlow(chatId: Long): Flow<ChatEntity?>
 

@@ -33,6 +33,12 @@ public interface MessageService {
 
     MessageResponse deleteMessage(Long userId, Long messageId);
 
+    boolean isBlocked(Long blockerId, Long targetUserId);
+
+    boolean blockUser(Long blockerId, Long targetUserId);
+
+    boolean unblockUser(Long blockerId, Long targetUserId);
+
     MessageResponse addOrUpdateReaction(Long userId, Long messageId, String reaction);
 
     MessageResponse removeReaction(Long userId, Long messageId);

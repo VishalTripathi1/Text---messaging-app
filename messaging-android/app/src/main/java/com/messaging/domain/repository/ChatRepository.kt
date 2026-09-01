@@ -62,6 +62,12 @@ interface ChatRepository {
 
     suspend fun removeReaction(messageId: Long): Result<Unit>
 
+    suspend fun blockUser(userId: Long): Result<Unit>
+
+    suspend fun unblockUser(userId: Long): Result<Unit>
+
+    suspend fun isUserBlocked(userId: Long): Result<Boolean>
+
     suspend fun togglePinChat(chatId: Long, pinned: Boolean): Result<Unit>
 
     suspend fun toggleArchiveChat(chatId: Long, archived: Boolean): Result<Unit>

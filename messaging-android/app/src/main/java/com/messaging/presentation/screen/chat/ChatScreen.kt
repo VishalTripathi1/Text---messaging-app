@@ -194,6 +194,7 @@ fun ChatScreen(
     val groupContacts by viewModel.contacts.collectAsState()
     val accessToken by viewModel.accessToken.collectAsState()
     val isPeerTyping by viewModel.isPeerTyping.collectAsState()
+    val isBlocked by viewModel.isBlocked.collectAsState()
 
     var textState by rememberSaveable(viewModel.chatId) { mutableStateOf("") }
     var searchQuery by rememberSaveable(viewModel.chatId) { mutableStateOf("") }
@@ -228,11 +229,16 @@ fun ChatScreen(
         }
     }
 
-    val filteredMessages = remember(messages, searchQuery) {
-        if (searchQuery.isBlank()) {
+    val filteredMessages = remember(messages, searchQuery, isBlocked, viewModel.blockedPeerId) {
+        val visible = if (searchQuery.isBlank()) {
             messages
         } else {
             messages.filter { it.messageText?.contains(searchQuery, ignoreCase = true) == true }
+        }
+        if (isBlocked && viewModel.blockedPeerId != null) {
+            visible.filter { it.senderId != viewModel.blockedPeerId }
+        } else {
+            visible
         }
     }
 
@@ -458,7 +464,7 @@ fun ChatScreen(
                             onDismissRequest = { showOverflowMenu = false }
                         ) {
                             DropdownMenuItem(
-                                text = { Text(if (viewModel.isBlocked.collectAsState().value) "Unblock" else "Block") },
+                                text = { Text(if (isBlocked) "Unblock" else "Block") },
                                 onClick = {
                                     viewModel.toggleBlockUser()
                                     showOverflowMenu = false
@@ -467,16 +473,18 @@ fun ChatScreen(
                             DropdownMenuItem(
                                 text = { Text("Clear chat") },
                                 onClick = {
-                                    viewModel.clearChat()
-                                    showOverflowMenu = false
+                                    viewModel.clearChat {
+                                        showOverflowMenu = false
+                                    }
                                 }
                             )
                             DropdownMenuItem(
                                 text = { Text("Delete chat") },
                                 onClick = {
-                                    viewModel.deleteChat()
-                                    showOverflowMenu = false
-                                    navController.popBackStack()
+                                    viewModel.deleteChat {
+                                        showOverflowMenu = false
+                                        navController.popBackStack()
+                                    }
                                 }
                             )
                         }
@@ -493,8 +501,8 @@ fun ChatScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .imePadding()
                 .background(MaterialTheme.colorScheme.background)
+                .imePadding()
         ) {
             // Messages Panel
             LazyColumn(
@@ -502,8 +510,9 @@ fun ChatScreen(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp),
-                contentPadding = PaddingValues(vertical = 12.dp),
+                    .padding(horizontal = 12.dp)
+                    .imePadding(),
+                contentPadding = PaddingValues(top = 12.dp, bottom = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(filteredMessages) { message ->
@@ -584,7 +593,8 @@ fun ChatScreen(
                     .padding(horizontal = 12.dp, vertical = 8.dp)
                     .clip(RoundedCornerShape(18.dp))
                     .background(MaterialTheme.colorScheme.surface)
-                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                    .padding(horizontal = 4.dp, vertical = 2.dp)
+                    .windowInsetsPadding(WindowInsets.ime),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = { filePickerLauncher.launch(arrayOf("*/*")) }) {
@@ -629,11 +639,12 @@ fun ChatScreen(
                 Spacer(modifier = Modifier.width(4.dp))
                 TextField(
                     value = textState,
-                    onValueChange = { textState = it },
-                    placeholder = { Text("Type a message...") },
+                    onValueChange = { if (!isBlocked) textState = it },
+                    placeholder = { Text(if (isBlocked) "You blocked this user" else "Type a message...") },
                     modifier = Modifier
                         .weight(1f)
                         .clip(RoundedCornerShape(14.dp)),
+                    enabled = !isBlocked,
                     colors = TextFieldDefaults.colors(
                         focusedIndicatorColor = Color.Transparent,
                         unfocusedIndicatorColor = Color.Transparent
@@ -643,6 +654,7 @@ fun ChatScreen(
                 Spacer(modifier = Modifier.width(8.dp))
                 IconButton(
                     onClick = {
+                        if (isBlocked) return@IconButton
                         val attachment = pendingAttachment
                         if (attachment != null) {
                             viewModel.sendMediaMessage(
@@ -660,7 +672,7 @@ fun ChatScreen(
                             textState = ""
                         }
                     },
-                    enabled = textState.isNotBlank() || pendingAttachment != null,
+                    enabled = !isBlocked && (textState.isNotBlank() || pendingAttachment != null),
                     modifier = Modifier
                         .clip(RoundedCornerShape(50))
                         .background(MaterialTheme.colorScheme.primary),
@@ -808,7 +820,7 @@ fun MessageBubble(
                     Spacer(modifier = Modifier.height(2.dp))
                 }
 
-                if (!message.reactions.isNullOrEmpty()) {
+                if (!message.isDeleted && !message.reactions.isNullOrEmpty()) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -914,31 +926,35 @@ fun MessageBubble(
             title = { Text("Message Options") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("React:", fontWeight = FontWeight.Bold)
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        val emojis = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
-                        emojis.forEach { emoji ->
-                            val isSelected = myCurrentReaction == emoji
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(
-                                        if (isSelected) MaterialTheme.colorScheme.primaryContainer
-                                        else Color.Transparent
+                    if (!message.isDeleted) {
+                        Text("React:", fontWeight = FontWeight.Bold)
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            val emojis = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
+                            emojis.forEach { emoji ->
+                                val isSelected = myCurrentReaction == emoji
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(
+                                            if (isSelected) MaterialTheme.colorScheme.primaryContainer
+                                            else Color.Transparent
+                                        )
+                                        .clickable {
+                                            if (!message.isDeleted) {
+                                                onReact(emoji)
+                                                showOptions = false
+                                            }
+                                        }
+                                        .padding(6.dp)
+                                ) {
+                                    Text(
+                                        text = emoji,
+                                        fontSize = 28.sp
                                     )
-                                    .clickable {
-                                        onReact(emoji)
-                                        showOptions = false
-                                    }
-                                    .padding(6.dp)
-                            ) {
-                                Text(
-                                    text = emoji,
-                                    fontSize = 28.sp
-                                )
+                                }
                             }
                         }
                     }

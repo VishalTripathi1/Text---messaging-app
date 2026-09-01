@@ -76,6 +76,8 @@ class ChatViewModel @Inject constructor(
     val isPeerTyping: StateFlow<Boolean> = _isPeerTyping
 
     private var otherUserId: Long? = null
+    val blockedPeerId: Long?
+        get() = otherUserId
     var currentUserId: Long = 0
     private var peerTypingTimeout: Job? = null
 
@@ -146,6 +148,12 @@ class ChatViewModel @Inject constructor(
                     _otherUserProfilePictureUrl.value = chat.otherProfilePictureUrl
                     _otherUserUsername.value = chat.otherUsername ?: ""
                     _otherUserBio.value = chat.otherBio
+                    otherUserId?.let { targetId ->
+                        viewModelScope.launch {
+                            chatRepository.isUserBlocked(targetId)
+                                .onSuccess { _isBlocked.value = it }
+                        }
+                    }
                     
                     launch {
                         webSocketClient.incomingMessages
@@ -280,7 +288,7 @@ class ChatViewModel @Inject constructor(
     }
 
     fun sendMessage(text: String, type: String = "TEXT") {
-        if (text.isBlank()) return
+        if (text.isBlank() || isBlocked.value) return
         viewModelScope.launch {
             // Wait (briefly) for chat metadata to finish loading so recipientId is populated -
             // otherwise the message is saved but never delivered live to the other person.
@@ -303,6 +311,7 @@ class ChatViewModel @Inject constructor(
         type: String,
         caption: String
     ) {
+        if (isBlocked.value) return
         viewModelScope.launch {
             withTimeoutOrNull(3000) { chatReady.await() }
             // Bytes only exist during upload; the UI keeps a URI while the attachment is staged.
@@ -317,7 +326,7 @@ class ChatViewModel @Inject constructor(
                 .onSuccess { responseMap ->
                     val filePath = responseMap["filePath"] as? String ?: ""
                     val size = (responseMap["fileSize"] as? Number)?.toLong() ?: fileBytes.size.toLong()
-                    
+
                     chatRepository.sendMessage(
                         recipientId = otherUserId,
                         chatId = chatId,
@@ -336,6 +345,7 @@ class ChatViewModel @Inject constructor(
     }
 
     fun sendTypingState(isTyping: Boolean) {
+        if (isBlocked.value) return
         val recipientId = otherUserId ?: return
         viewModelScope.launch {
             val wsMessage = WebSocketMessage(
@@ -355,28 +365,36 @@ class ChatViewModel @Inject constructor(
     }
 
     fun deleteMessage(messageId: Long, deleteForEveryone: Boolean = false) {
+        if (messageId <= 0L) return
         viewModelScope.launch {
             if (deleteForEveryone) {
                 chatRepository.deleteMessage(messageId)
                 return@launch
             }
 
-            val localMessage = messageDao.getMessageById(messageId) ?: return@launch
+            val localMessage = messageDao.getMessageById(messageId)
+            if (localMessage == null || localMessage.isDeleted) {
+                return@launch
+            }
+
             val updated = localMessage.copy(
                 isDeleted = true,
                 messageText = "This message was deleted",
                 attachmentPath = null,
                 attachmentFileName = null,
                 attachmentFileType = null,
-                attachmentFileSize = null
+                attachmentFileSize = null,
+                reactions = emptyList()
             )
             messageDao.insertMessage(updated)
 
-            if (localMessage.chatId != null) {
-                chatDao.markLastMessageDeleted(localMessage.chatId, localMessage.senderId)
+            val conversationId = when {
+                localMessage.chatId != null -> localMessage.chatId
+                localMessage.groupId != null -> -localMessage.groupId
+                else -> null
             }
-            if (localMessage.groupId != null) {
-                chatDao.markLastMessageDeleted(-localMessage.groupId, localMessage.senderId)
+            if (conversationId != null) {
+                chatDao.markLastMessageDeleted(conversationId, localMessage.senderId)
             }
         }
     }
@@ -425,18 +443,37 @@ class ChatViewModel @Inject constructor(
     val isBlocked: StateFlow<Boolean> = _isBlocked
 
     fun toggleBlockUser() {
-        _isBlocked.value = !_isBlocked.value
-    }
-
-    fun clearChat() {
         viewModelScope.launch {
-            chatRepository.clearChat(chatId)
+            val targetId = otherUserId ?: return@launch
+            val nextValue = !_isBlocked.value
+            val result = if (nextValue) {
+                chatRepository.blockUser(targetId)
+            } else {
+                chatRepository.unblockUser(targetId)
+            }
+            if (result.isSuccess) {
+                _isBlocked.value = nextValue
+            }
         }
     }
 
-    fun deleteChat() {
+    fun clearChat(onSuccess: (() -> Unit)? = null) {
         viewModelScope.launch {
-            chatRepository.deleteChat(chatId)
+            val result = chatRepository.clearChat(chatId)
+            if (result.isSuccess) {
+                chatRepository.syncChats()
+                onSuccess?.invoke()
+            }
+        }
+    }
+
+    fun deleteChat(onSuccess: (() -> Unit)? = null) {
+        viewModelScope.launch {
+            val result = chatRepository.deleteChat(chatId)
+            if (result.isSuccess) {
+                chatRepository.syncChats()
+                onSuccess?.invoke()
+            }
         }
     }
 

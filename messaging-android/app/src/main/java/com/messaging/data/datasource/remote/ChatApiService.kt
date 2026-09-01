@@ -137,6 +137,21 @@ interface ChatApiService {
         @Query("archived") archived: Boolean
     ): Response<ChatResponse>
 
+    @PUT("v1/chats/{chatId}/block")
+    suspend fun blockChat(
+        @Path("chatId") chatId: Long
+    ): Response<Unit>
+
+    @DELETE("v1/chats/{chatId}/block")
+    suspend fun unblockChat(
+        @Path("chatId") chatId: Long
+    ): Response<Unit>
+
+    @GET("v1/chats/{chatId}/blocked")
+    suspend fun isChatBlocked(
+        @Path("chatId") chatId: Long
+    ): Response<Boolean>
+
     @DELETE("v1/chats/{chatId}")
     suspend fun deleteChat(
         @Path("chatId") chatId: Long

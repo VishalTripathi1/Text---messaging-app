@@ -64,6 +64,50 @@ public class ChatController {
         return ResponseEntity.ok(chats);
     }
 
+    @PutMapping("/{chatId}/block")
+    public ResponseEntity<Void> blockChat(
+            @AuthenticationPrincipal CustomUserPrincipal principal,
+            @PathVariable("chatId") Long chatId
+    ) {
+        Chat chat = chatRepository.findById(chatId).orElse(null);
+        if (chat == null) {
+            return ResponseEntity.notFound().build();
+        }
+        Long otherUserId = chat.getUser1().getId().equals(principal.getId())
+                ? chat.getUser2().getId() : chat.getUser1().getId();
+        messageService.blockUser(principal.getId(), otherUserId);
+        return ResponseEntity.ok().build();
+    }
+
+    @DeleteMapping("/{chatId}/block")
+    public ResponseEntity<Void> unblockChat(
+            @AuthenticationPrincipal CustomUserPrincipal principal,
+            @PathVariable("chatId") Long chatId
+    ) {
+        Chat chat = chatRepository.findById(chatId).orElse(null);
+        if (chat == null) {
+            return ResponseEntity.notFound().build();
+        }
+        Long otherUserId = chat.getUser1().getId().equals(principal.getId())
+                ? chat.getUser2().getId() : chat.getUser1().getId();
+        messageService.unblockUser(principal.getId(), otherUserId);
+        return ResponseEntity.ok().build();
+    }
+
+    @GetMapping("/{chatId}/blocked")
+    public ResponseEntity<Boolean> isChatBlocked(
+            @AuthenticationPrincipal CustomUserPrincipal principal,
+            @PathVariable("chatId") Long chatId
+    ) {
+        Chat chat = chatRepository.findById(chatId).orElse(null);
+        if (chat == null) {
+            return ResponseEntity.notFound().build();
+        }
+        Long otherUserId = chat.getUser1().getId().equals(principal.getId())
+                ? chat.getUser2().getId() : chat.getUser1().getId();
+        return ResponseEntity.ok(messageService.isBlocked(principal.getId(), otherUserId));
+    }
+
     @PostMapping("/message")
     public ResponseEntity<MessageResponse> sendMessage(
             @AuthenticationPrincipal CustomUserPrincipal principal,

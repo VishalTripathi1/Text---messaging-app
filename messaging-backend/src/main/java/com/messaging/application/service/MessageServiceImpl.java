@@ -40,6 +40,7 @@ public class MessageServiceImpl implements MessageService {
     private final GroupMemberRepository groupMemberRepository;
     private final ChatUserPreferenceRepository chatUserPreferenceRepository;
     private final UserSettingsRepository userSettingsRepository;
+    private final BlockedUserRepository blockedUserRepository;
     private final PushNotificationService pushNotificationService;
 
     @Override
@@ -107,10 +108,66 @@ public class MessageServiceImpl implements MessageService {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public boolean isBlocked(Long blockerId, Long targetUserId) {
+        if (blockerId == null || targetUserId == null || blockerId.equals(targetUserId)) {
+            return false;
+        }
+        return blockedUserRepository.existsByBlockerIdAndBlockedId(blockerId, targetUserId);
+    }
+
+    @Override
+    @Transactional
+    public boolean blockUser(Long blockerId, Long targetUserId) {
+        if (blockerId == null || targetUserId == null || blockerId.equals(targetUserId)) {
+            return false;
+        }
+        User blocker = userRepository.findById(blockerId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found: " + blockerId));
+        User blocked = userRepository.findById(targetUserId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found: " + targetUserId));
+
+        if (blockedUserRepository.existsByBlockerIdAndBlockedId(blockerId, targetUserId)) {
+            return true;
+        }
+
+        blockedUserRepository.save(BlockedUser.builder()
+                .blocker(blocker)
+                .blocked(blocked)
+                .build());
+        return true;
+    }
+
+    @Override
+    @Transactional
+    public boolean unblockUser(Long blockerId, Long targetUserId) {
+        if (blockerId == null || targetUserId == null || blockerId.equals(targetUserId)) {
+            return false;
+        }
+        blockedUserRepository.deleteByBlockerIdAndBlockedId(blockerId, targetUserId);
+        return true;
+    }
+
+    @Override
     @Transactional
     public MessageResponse sendMessage(Long senderId, MessageRequest request) {
         User sender = userRepository.findById(senderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Sender not found"));
+
+        if (request.getRecipientId() != null && isBlocked(senderId, request.getRecipientId())) {
+            throw new BadRequestException("You cannot send messages to a blocked user");
+        }
+
+        if (request.getChatId() != null) {
+            Chat chat = chatRepository.findById(request.getChatId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Chat not found"));
+            if (chat.getUser1() != null && chat.getUser2() != null) {
+                Long otherUserId = chat.getUser1().getId().equals(senderId) ? chat.getUser2().getId() : chat.getUser1().getId();
+                if (isBlocked(senderId, otherUserId)) {
+                    throw new BadRequestException("You cannot send messages to a blocked user");
+                }
+            }
+        }
 
         // No validation existed at all: empty/blank text messages were accepted and there was
         // no length cap (a client bug or malicious request could store an arbitrarily large
@@ -822,6 +879,9 @@ public class MessageServiceImpl implements MessageService {
     public MessageResponse addOrUpdateReaction(Long userId, Long messageId, String reaction) {
         Message message = messageRepository.findById(messageId)
                 .orElseThrow(() -> new ResourceNotFoundException("Message not found"));
+        if (Boolean.TRUE.equals(message.getIsDeleted())) {
+            throw new BadRequestException("Cannot react to a deleted message");
+        }
         ensureConversationMember(message, userId);
         User user = userRepository.getReferenceById(userId);
         

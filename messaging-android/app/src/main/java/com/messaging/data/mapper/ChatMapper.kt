@@ -128,14 +128,17 @@ fun ChatResponse.toEntity(): ChatEntity {
             message.messageText
         }
     }
+
+    val isGroupChat = id < 0 || otherUser == null
+
     return ChatEntity(
         id = id,
-        otherUserId = otherUser.id,
-        otherUsername = otherUser.username,
-        otherDisplayName = otherUser.displayName,
-        otherBio = otherUser.bio,
-        otherProfilePictureUrl = otherUser.profilePictureUrl,
-        otherStatus = otherUser.status ?: "OFFLINE",
+        otherUserId = if (isGroupChat) null else otherUser?.id,
+        otherUsername = if (isGroupChat) null else otherUser?.username,
+        otherDisplayName = if (isGroupChat) null else otherUser?.displayName,
+        otherBio = if (isGroupChat) null else otherUser?.bio,
+        otherProfilePictureUrl = if (isGroupChat) null else otherUser?.profilePictureUrl,
+        otherStatus = if (isGroupChat) null else otherUser?.status ?: "OFFLINE",
         lastMessageText = previewText,
         lastMessageSenderId = lastMessage?.senderId,
         lastMessageStatus = if (lastMessage?.messageText == "This message was deleted") {
@@ -144,10 +147,10 @@ fun ChatResponse.toEntity(): ChatEntity {
             lastMessage?.deliveryStatus ?: "SENT"
         },
         lastMessageAt = lastMessage?.createdAt?.toEpochMillis(),
-        isPinned = isPinned,
-        isArchived = isArchived,
-        unreadCount = unreadCount,
-        isGroup = false,
+        isPinned = isPinned ?: false,
+        isArchived = isArchived ?: false,
+        unreadCount = unreadCount ?: 0,
+        isGroup = isGroupChat,
         groupName = null,
         groupDescription = null
     )

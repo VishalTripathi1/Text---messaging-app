@@ -1166,6 +1166,57 @@ class ChatRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun blockUser(userId: Long): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val chat = chatDao.getChatByOtherUserId(userId)
+            if (chat == null) {
+                return@withContext Result.failure(Exception("Chat not found for user $userId"))
+            }
+            val response = chatApiService.blockChat(chat.id)
+            if (response.isSuccessful) {
+                Result.success(Unit)
+            } else {
+                Result.failure(Exception(parseErrorMessage(response, "Failed to block user")))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun unblockUser(userId: Long): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val chat = chatDao.getChatByOtherUserId(userId)
+            if (chat == null) {
+                return@withContext Result.failure(Exception("Chat not found for user $userId"))
+            }
+            val response = chatApiService.unblockChat(chat.id)
+            if (response.isSuccessful) {
+                Result.success(Unit)
+            } else {
+                Result.failure(Exception(parseErrorMessage(response, "Failed to unblock user")))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun isUserBlocked(userId: Long): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val chat = chatDao.getChatByOtherUserId(userId)
+            if (chat == null) {
+                return@withContext Result.success(false)
+            }
+            val response = chatApiService.isChatBlocked(chat.id)
+            if (response.isSuccessful) {
+                Result.success(response.body() ?: false)
+            } else {
+                Result.failure(Exception(parseErrorMessage(response, "Failed to fetch block status")))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     override suspend fun togglePinChat(chatId: Long, pinned: Boolean): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             val response = chatApiService.pinChat(chatId, pinned)
