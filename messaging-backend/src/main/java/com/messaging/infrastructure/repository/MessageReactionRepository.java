@@ -18,6 +18,10 @@ public interface MessageReactionRepository extends JpaRepository<MessageReaction
     List<MessageReaction> findByMessageId(Long messageId);
     Optional<MessageReaction> findByMessageIdAndUserId(Long messageId, Long userId);
 
+    @org.springframework.data.jpa.repository.Modifying
+    @Query("DELETE FROM MessageReaction mr WHERE mr.message.id IN :messageIds")
+    void deleteByMessageIds(@Param("messageIds") Collection<Long> messageIds);
+
     /**
      * Every reaction on any of {@code messageIds}, as {@code [messageId, userId, username, reaction]}
      * rows.

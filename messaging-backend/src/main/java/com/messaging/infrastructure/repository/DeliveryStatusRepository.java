@@ -14,6 +14,10 @@ import java.util.Optional;
 public interface DeliveryStatusRepository extends JpaRepository<DeliveryStatus, Long> {
     Optional<DeliveryStatus> findByMessageIdAndRecipientId(Long messageId, Long recipientId);
 
+    @org.springframework.data.jpa.repository.Modifying
+    @Query("DELETE FROM DeliveryStatus ds WHERE ds.message.id IN :messageIds")
+    void deleteByMessageIds(@Param("messageIds") java.util.Collection<Long> messageIds);
+
     List<DeliveryStatus> findByRecipientIdAndStatus(Long recipientId, DeliveryStatus.DeliveryStatusType status);
 
     /**

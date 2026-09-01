@@ -903,14 +903,14 @@ public class MessageServiceImpl implements MessageService {
             if (groupMemberRepository.findByGroupIdAndUserId(groupId, userId).isEmpty()) {
                 throw new BadRequestException("You are not a member of this group");
             }
-            messageRepository.deleteByGroupId(groupId);
+            deleteMessagesInGroup(groupId);
             return;
         }
 
         Chat chat = chatRepository.findById(chatId)
                 .orElseThrow(() -> new ResourceNotFoundException("Chat not found: " + chatId));
         ensureChatParticipant(chat, userId);
-        messageRepository.deleteByChatId(chatId);
+        deleteMessagesInChat(chatId);
         chatUserPreferenceRepository.deleteByChatId(chatId);
         chat.setLastMessageId(null);
         chat.setLastMessageAt(null);
@@ -929,9 +929,13 @@ public class MessageServiceImpl implements MessageService {
             Group group = groupRepository.findById(groupId)
                     .orElseThrow(() -> new ResourceNotFoundException("Group not found: " + groupId));
             if (!group.getCreatedBy().getId().equals(userId)) {
-                throw new BadRequestException("Only the group creator can delete the group");
+                GroupMember membership = groupMemberRepository.findByGroupIdAndUserId(groupId, userId)
+                        .orElse(null);
+                if (membership == null || membership.getRole() != GroupMember.MemberRole.ADMIN) {
+                    throw new BadRequestException("Only the group creator or an admin can delete the group");
+                }
             }
-            messageRepository.deleteByGroupId(groupId);
+            deleteMessagesInGroup(groupId);
             groupRepository.delete(group);
             return;
         }
@@ -939,9 +943,31 @@ public class MessageServiceImpl implements MessageService {
         Chat chat = chatRepository.findById(chatId)
                 .orElseThrow(() -> new ResourceNotFoundException("Chat not found: " + chatId));
         ensureChatParticipant(chat, userId);
-        messageRepository.deleteByChatId(chatId);
+        deleteMessagesInChat(chatId);
         chatUserPreferenceRepository.deleteByChatId(chatId);
         chatRepository.delete(chat);
+    }
+
+    private void deleteMessagesInChat(Long chatId) {
+        List<Long> messageIds = messageRepository.findIdsByChatId(chatId);
+        deleteDependentMessageRows(messageIds);
+        messageRepository.deleteByChatId(chatId);
+    }
+
+    private void deleteMessagesInGroup(Long groupId) {
+        List<Long> messageIds = messageRepository.findIdsByGroupId(groupId);
+        deleteDependentMessageRows(messageIds);
+        messageRepository.deleteByGroupId(groupId);
+    }
+
+    private void deleteDependentMessageRows(List<Long> messageIds) {
+        if (messageIds == null || messageIds.isEmpty()) {
+            return;
+        }
+        attachmentRepository.deleteByMessageIds(messageIds);
+        messageReactionRepository.deleteByMessageIds(messageIds);
+        readReceiptRepository.deleteByMessageIds(messageIds);
+        deliveryStatusRepository.deleteByMessageIds(messageIds);
     }
 
     @Override

@@ -16,6 +16,10 @@ import java.util.List;
 public interface AttachmentRepository extends JpaRepository<Attachment, Long> {
     java.util.List<Attachment> findByMessageId(Long messageId);
 
+    @org.springframework.data.jpa.repository.Modifying
+    @Query("DELETE FROM Attachment a WHERE a.message.id IN :messageIds")
+    void deleteByMessageIds(@Param("messageIds") Collection<Long> messageIds);
+
     /**
      * Every attachment belonging to any of {@code messageIds}, as
      * {@code [messageId, filePath, fileName, fileType, fileSize]} rows ordered so the oldest

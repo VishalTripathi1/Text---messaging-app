@@ -17,6 +17,10 @@ import java.util.Optional;
 public interface ReadReceiptRepository extends JpaRepository<ReadReceipt, Long> {
     Optional<ReadReceipt> findByMessageIdAndUserId(Long messageId, Long userId);
 
+    @org.springframework.data.jpa.repository.Modifying
+    @Query("DELETE FROM ReadReceipt rr WHERE rr.message.id IN :messageIds")
+    void deleteByMessageIds(@Param("messageIds") Collection<Long> messageIds);
+
     /**
      * Counts messages in a chat that someone else sent and this user has no read receipt for.
      *

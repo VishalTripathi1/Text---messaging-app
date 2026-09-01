@@ -37,6 +37,12 @@ public interface MessageRepository extends JpaRepository<Message, Long> {
            "AND NOT EXISTS (SELECT r FROM ReadReceipt r WHERE r.message.id = m.id AND r.user.id = :userId)")
     List<Message> findUnreadMessagesInChat(@Param("chatId") Long chatId, @Param("userId") Long userId);
 
+    @Query("SELECT m.id FROM Message m WHERE m.chat.id = :chatId")
+    List<Long> findIdsByChatId(@Param("chatId") Long chatId);
+
+    @Query("SELECT m.id FROM Message m WHERE m.group.id = :groupId")
+    List<Long> findIdsByGroupId(@Param("groupId") Long groupId);
+
     @Modifying
     @Query("DELETE FROM Message m WHERE m.chat.id = :chatId")
     void deleteByChatId(@Param("chatId") Long chatId);
