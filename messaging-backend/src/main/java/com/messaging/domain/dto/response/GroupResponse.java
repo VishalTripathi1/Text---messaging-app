@@ -23,4 +23,6 @@ public class GroupResponse {
     private LocalDateTime createdAt;
     private long memberCount;
     private List<UserResponse> members;
+    private boolean isCleared;
+    private boolean isDeleted;
 }

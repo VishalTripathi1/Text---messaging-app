@@ -24,12 +24,13 @@ public interface ChatUserPreferenceRepository extends JpaRepository<ChatUserPref
     void deleteByChatId(@Param("chatId") Long chatId);
 
     /**
-     * This user's pin/archive/clear/delete flags across several chats, as {@code [chatId, isPinned, isArchived, isCleared, isDeleted]}
+     * This user's pin/archive/clear/delete flags (plus the clearedAt/deletedAt cutoffs) across
+     * several chats, as {@code [chatId, isPinned, isArchived, isCleared, isDeleted, clearedAt, deletedAt]}
      * rows, so the chat list does not run {@link #findByChatIdAndUserId} once per chat. Chats with no
      * preference row - the common case - are simply absent, so callers must treat a missing chat as
      * neither pinned, nor archived, nor cleared, nor deleted. See MessageServiceImpl.mapToChatResponses.
      */
-    @Query("SELECT p.chatId, p.isPinned, p.isArchived, p.isCleared, p.deleted FROM ChatUserPreference p " +
+    @Query("SELECT p.chatId, p.isPinned, p.isArchived, p.isCleared, p.deleted, p.clearedAt, p.deletedAt FROM ChatUserPreference p " +
            "WHERE p.user.id = :userId AND p.chatId IN :chatIds")
     List<Object[]> findPreferenceRowsByUserIdAndChatIds(@Param("userId") Long userId,
                                                        @Param("chatIds") Collection<Long> chatIds);

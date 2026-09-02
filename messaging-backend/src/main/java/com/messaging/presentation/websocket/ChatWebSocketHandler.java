@@ -205,6 +205,13 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             }
 
             if (recipientId != null) {
+                // recipientId here is whoever originally sent the messages senderId just read.
+                // markChatAsRead() above already skips creating a receipt for a blocked sender's
+                // messages, but this broadcast is unconditional otherwise - it would still tell
+                // a blocked sender "your message was read" even with nothing to back it up.
+                if (messageService.isBlocked(senderId, recipientId)) {
+                    return;
+                }
                 boolean sharesReadReceipts = userSettingsRepository.findByUserId(senderId)
                         .map(settings -> !Boolean.FALSE.equals(settings.getShowReadReceipts()))
                         .orElse(true);
@@ -234,7 +241,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             }
         }
 
-        if (recipientId != null) {
+        if (recipientId != null && !messageService.isBlocked(wsMessage.getSenderId(), recipientId)) {
             wsMessage.setRecipientId(recipientId);
             String json = objectMapper.writeValueAsString(wsMessage);
             sendToUser(recipientId, json);
@@ -301,14 +308,23 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         List<DeliveryStatus> pendingList = deliveryStatusRepository.findByRecipientIdAndStatusWithMessageAndSender(
                 recipientId, DeliveryStatus.DeliveryStatusType.PENDING);
 
-        for (DeliveryStatus status : pendingList) {
+        // This runs on every reconnect and used to mark every pending message delivered with no
+        // regard for whether recipientId currently has the sender blocked. That's how a message
+        // sent (and left PENDING) before a block would "catch up" to DELIVERED the moment the
+        // recipient's device came back online, handing the blocked sender a delivery tick for a
+        // message that was never actually let through.
+        List<DeliveryStatus> deliverable = pendingList.stream()
+                .filter(status -> !messageService.isBlocked(recipientId, status.getMessage().getSender().getId()))
+                .collect(java.util.stream.Collectors.toList());
+
+        for (DeliveryStatus status : deliverable) {
             status.setStatus(DeliveryStatus.DeliveryStatusType.DELIVERED);
             status.setDeliveredAt(LocalDateTime.now());
         }
         // One batch write instead of N individual save() calls.
-        deliveryStatusRepository.saveAll(pendingList);
+        deliveryStatusRepository.saveAll(deliverable);
 
-        for (DeliveryStatus status : pendingList) {
+        for (DeliveryStatus status : deliverable) {
             Long senderId = status.getMessage().getSender().getId();
             Long chatId = status.getMessage().getChat() != null ? status.getMessage().getChat().getId() : null;
 

@@ -11,6 +11,10 @@ public interface GroupService {
     GroupResponse createGroup(Long creatorId, GroupCreateRequest request);
     
     List<GroupResponse> getUserGroups(Long userId, int page, int size);
+
+    List<GroupResponse> getClearedGroups(Long userId, int page, int size);
+
+    List<GroupResponse> getDeletedGroups(Long userId, int page, int size);
     
     GroupResponse getGroupDetails(Long requesterId, Long groupId);
     

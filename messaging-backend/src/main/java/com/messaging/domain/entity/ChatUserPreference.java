@@ -54,6 +54,15 @@ public class ChatUserPreference {
     @Builder.Default
     private Boolean deleted = false;
 
+    // Messages created before this timestamp are hidden from this user's view of the chat.
+    // Without it, isCleared/deleted are just booleans with nothing to compare a message's
+    // createdAt against, so re-opening a "cleared" chat showed the full history again.
+    @Column(name = "cleared_at")
+    private LocalDateTime clearedAt;
+
+    @Column(name = "deleted_at")
+    private LocalDateTime deletedAt;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;

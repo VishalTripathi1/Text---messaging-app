@@ -267,6 +267,23 @@ public class MessageServiceImpl implements MessageService {
             chat.setLastMessageId(savedMessage.getId());
             chat.setLastMessageAt(savedMessage.getCreatedAt());
             chatRepository.save(chat);
+
+            // clearChat()/deleteChat() only ever set a flag - nothing ever cleared it back, so a
+            // chat stayed hidden from getUserChats() forever even after fresh messages came in,
+            // and the sender's own "delete then message again" flow left them stuck the same
+            // way. A brand new message is exactly the point a hidden conversation should
+            // reappear, on both sides, the way WhatsApp/Telegram bring a chat back to the top of
+            // the list the moment there's new activity in it.
+            revivePreferenceIfHidden(chat.getId(), senderId);
+            Long otherUserId = chat.getUser1().getId().equals(senderId) ? chat.getUser2().getId() : chat.getUser1().getId();
+            revivePreferenceIfHidden(chat.getId(), otherUserId);
+        } else if (group != null) {
+            revivePreferenceIfHidden(-group.getId(), senderId);
+            for (GroupMember member : groupMemberRepository.findByGroupId(group.getId())) {
+                if (!member.getUser().getId().equals(senderId)) {
+                    revivePreferenceIfHidden(-group.getId(), member.getUser().getId());
+                }
+            }
         }
 
         // Generate initial delivery status for recipients
@@ -339,7 +356,66 @@ public class MessageServiceImpl implements MessageService {
         Pageable pageable = PageRequest.of(page, size);
         // mapToMessageResponses, not one mapToMessageResponse per row: the per-message version ran
         // about five queries each, which is why a long history took seconds to come back.
-        return mapToMessageResponses(messageRepository.findChatMessages(chatId, pageable).getContent());
+        List<Message> messages = messageRepository.findChatMessages(chatId, pageable).getContent();
+        messages = filterMessagesHiddenByPreference(messages, chatId, userId);
+        return mapToMessageResponses(messages);
+    }
+
+    /**
+     * A new message is exactly the moment a previously cleared/deleted conversation should
+     * become visible again. clearChat()/deleteChat() only ever set a flag - nothing ever reset
+     * it - so a chat or group stayed hidden from the list forever afterward, even once fresh
+     * messages started arriving in it again.
+     */
+    private void revivePreferenceIfHidden(Long chatOrGroupId, Long userId) {
+        chatUserPreferenceRepository.findByChatIdAndUserId(chatOrGroupId, userId).ifPresent(preference -> {
+            boolean changed = false;
+            if (Boolean.TRUE.equals(preference.getIsCleared())) {
+                preference.setIsCleared(false);
+                preference.setClearedAt(null);
+                changed = true;
+            }
+            if (Boolean.TRUE.equals(preference.getDeleted())) {
+                preference.setDeleted(false);
+                preference.setDeletedAt(null);
+                changed = true;
+            }
+            if (changed) {
+                chatUserPreferenceRepository.save(preference);
+            }
+        });
+    }
+
+    /**
+     * Clear/delete chat only ever set a boolean on ChatUserPreference - nothing compared a
+     * message's createdAt against anything, so the full history came right back the next time
+     * the chat (or a fresh insertIfAbsent chat/group) was opened. This hides everything sent at
+     * or before whichever of clearedAt/deletedAt is most recent for this user, while leaving
+     * messages that arrive afterward visible - matching WhatsApp/Telegram's "clear chat" and
+     * "delete chat" behavior instead of a one-time, permanently-stuck wipe.
+     */
+    private List<Message> filterMessagesHiddenByPreference(List<Message> messages, Long chatOrGroupId, Long userId) {
+        Optional<ChatUserPreference> preferenceOpt =
+                chatUserPreferenceRepository.findByChatIdAndUserId(chatOrGroupId, userId);
+        if (preferenceOpt.isEmpty()) {
+            return messages;
+        }
+        ChatUserPreference preference = preferenceOpt.get();
+        LocalDateTime cutoff = null;
+        if (preference.getClearedAt() != null) {
+            cutoff = preference.getClearedAt();
+        }
+        if (preference.getDeletedAt() != null
+                && (cutoff == null || preference.getDeletedAt().isAfter(cutoff))) {
+            cutoff = preference.getDeletedAt();
+        }
+        if (cutoff == null) {
+            return messages;
+        }
+        final LocalDateTime finalCutoff = cutoff;
+        return messages.stream()
+                .filter(m -> m.getCreatedAt() != null && m.getCreatedAt().isAfter(finalCutoff))
+                .collect(Collectors.toList());
     }
 
     @Override
@@ -349,7 +425,10 @@ public class MessageServiceImpl implements MessageService {
             throw new BadRequestException("You are not a member of this group");
         }
         Pageable pageable = PageRequest.of(page, size);
-        return mapToMessageResponses(messageRepository.findGroupMessages(groupId, pageable).getContent());
+        List<Message> messages = messageRepository.findGroupMessages(groupId, pageable).getContent();
+        // Group preferences are keyed on -groupId, see clearChat()/deleteChat().
+        messages = filterMessagesHiddenByPreference(messages, -groupId, userId);
+        return mapToMessageResponses(messages);
     }
 
     @Override
@@ -361,6 +440,12 @@ public class MessageServiceImpl implements MessageService {
         List<Message> unreadMessages = messageRepository.findUnreadMessagesInChat(chatId, userId);
 
         for (Message message : unreadMessages) {
+            // A blocked sender should never learn their message was read (or delivered) - that's
+            // the whole point of blocking someone on WhatsApp/Telegram. Skip generating a read
+            // receipt for anything they sent; it stays showing "sent" only on their end.
+            if (isBlocked(userId, message.getSender().getId())) {
+                continue;
+            }
             // The query excludes existing receipts, but retain this guard so concurrent REST
             // and WebSocket read events cannot violate the database uniqueness constraint.
             if (readReceiptRepository.findByMessageIdAndUserId(message.getId(), userId).isEmpty()) {
@@ -380,7 +465,11 @@ public class MessageServiceImpl implements MessageService {
 
         if (optionalStatus.isPresent()) {
             DeliveryStatus status = optionalStatus.get();
-            if (status.getStatus() == DeliveryStatus.DeliveryStatusType.PENDING) {
+            // Same reasoning as markChatAsRead: userId (the recipient) having the sender
+            // blocked means this message should sit there un-acknowledged from the sender's
+            // point of view - never progressing past "sent".
+            if (status.getStatus() == DeliveryStatus.DeliveryStatusType.PENDING
+                    && !isBlocked(userId, status.getMessage().getSender().getId())) {
                 status.setStatus(DeliveryStatus.DeliveryStatusType.DELIVERED);
                 status.setDeliveredAt(LocalDateTime.now());
                 deliveryStatusRepository.save(status);
@@ -496,12 +585,23 @@ public class MessageServiceImpl implements MessageService {
         Map<Long, Boolean> archivedByChatId = new java.util.HashMap<>();
         Map<Long, Boolean> clearedByChatId = new java.util.HashMap<>();
         Map<Long, Boolean> deletedByChatId = new java.util.HashMap<>();
+        Map<Long, LocalDateTime> hiddenCutoffByChatId = new java.util.HashMap<>();
         for (Object[] row : chatUserPreferenceRepository
                 .findPreferenceRowsByUserIdAndChatIds(currentUserId, chatIds)) {
-            pinnedByChatId.put((Long) row[0], Boolean.TRUE.equals(row[1]));
-            archivedByChatId.put((Long) row[0], Boolean.TRUE.equals(row[2]));
-            clearedByChatId.put((Long) row[0], Boolean.TRUE.equals(row[3]));
-            deletedByChatId.put((Long) row[0], Boolean.TRUE.equals(row[4]));
+            Long rowChatId = (Long) row[0];
+            pinnedByChatId.put(rowChatId, Boolean.TRUE.equals(row[1]));
+            archivedByChatId.put(rowChatId, Boolean.TRUE.equals(row[2]));
+            clearedByChatId.put(rowChatId, Boolean.TRUE.equals(row[3]));
+            deletedByChatId.put(rowChatId, Boolean.TRUE.equals(row[4]));
+            LocalDateTime clearedAt = (LocalDateTime) row[5];
+            LocalDateTime deletedAt = (LocalDateTime) row[6];
+            LocalDateTime cutoff = clearedAt;
+            if (deletedAt != null && (cutoff == null || deletedAt.isAfter(cutoff))) {
+                cutoff = deletedAt;
+            }
+            if (cutoff != null) {
+                hiddenCutoffByChatId.put(rowChatId, cutoff);
+            }
         }
 
         List<ChatResponse> responses = new java.util.ArrayList<>(chats.size());
@@ -510,6 +610,16 @@ public class MessageServiceImpl implements MessageService {
             MessageResponse lastMessageDto = chat.getLastMessageId() != null
                     ? lastMessageById.get(chat.getLastMessageId())
                     : null;
+            // chat.lastMessageId/lastMessageAt are shared across both participants, so without
+            // this check a chat this user cleared or deleted still showed its old, supposedly-
+            // hidden last message as the list preview - the conversation itself was just blank
+            // inside, but the outside still gave away what it used to say.
+            LocalDateTime hiddenCutoff = hiddenCutoffByChatId.get(chat.getId());
+            if (lastMessageDto != null && hiddenCutoff != null
+                    && lastMessageDto.getCreatedAt() != null
+                    && !lastMessageDto.getCreatedAt().isAfter(hiddenCutoff)) {
+                lastMessageDto = null;
+            }
 
             responses.add(ChatResponse.builder()
                     .id(chat.getId())
@@ -925,13 +1035,19 @@ public class MessageServiceImpl implements MessageService {
             if (groupMemberRepository.findByGroupIdAndUserId(groupId, userId).isEmpty()) {
                 throw new BadRequestException("You are not a member of this group");
             }
+            // Store the group's id as negative, mirroring the app's own -groupId convention
+            // (see ChatController/ChatViewModel). chat_id here is shared with real Chat ids,
+            // which start their own sequence at 1 too - storing the group id as-is risks two
+            // unrelated rows (a chat and a group with the same numeric id) colliding under the
+            // (chat_id, user_id) unique constraint.
             ChatUserPreference preference = chatUserPreferenceRepository
-                    .findByChatIdAndUserId(groupId, userId)
+                    .findByChatIdAndUserId(chatId, userId)
                     .orElseGet(() -> ChatUserPreference.builder()
-                            .chatId(groupId)
+                            .chatId(chatId)
                             .user(userRepository.getReferenceById(userId))
                             .build());
             preference.setIsCleared(true);
+            preference.setClearedAt(java.time.LocalDateTime.now());
             chatUserPreferenceRepository.save(preference);
             return;
         }
@@ -944,6 +1060,7 @@ public class MessageServiceImpl implements MessageService {
                         .user(userRepository.getReferenceById(userId))
                         .build());
         preference.setIsCleared(true);
+        preference.setClearedAt(java.time.LocalDateTime.now());
         chatUserPreferenceRepository.save(preference);
 
         // Reset last message info for this user's view
@@ -965,13 +1082,16 @@ public class MessageServiceImpl implements MessageService {
             if (groupMemberRepository.findByGroupIdAndUserId(groupId, userId).isEmpty()) {
                 throw new BadRequestException("You are not a member of this group");
             }
+            // See clearChat() above: keep the group id negative so it can't collide with a
+            // real chat's id in this shared chat_id column.
             ChatUserPreference preference = chatUserPreferenceRepository
-                    .findByChatIdAndUserId(groupId, userId)
+                    .findByChatIdAndUserId(chatId, userId)
                     .orElseGet(() -> ChatUserPreference.builder()
-                            .chatId(groupId)
+                            .chatId(chatId)
                             .user(userRepository.getReferenceById(userId))
                             .build());
             preference.setDeleted(true);
+            preference.setDeletedAt(java.time.LocalDateTime.now());
             chatUserPreferenceRepository.save(preference);
             return;
         }
@@ -984,6 +1104,7 @@ public class MessageServiceImpl implements MessageService {
                         .user(userRepository.getReferenceById(userId))
                         .build());
         preference.setDeleted(true);
+        preference.setDeletedAt(java.time.LocalDateTime.now());
         chatUserPreferenceRepository.save(preference);
     }
 

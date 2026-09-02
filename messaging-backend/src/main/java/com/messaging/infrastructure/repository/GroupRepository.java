@@ -14,8 +14,24 @@ import org.springframework.stereotype.Repository;
 @Repository
 public interface GroupRepository extends JpaRepository<Group, Long> {
 
-    @Query("SELECT g FROM Group g JOIN g.members gm WHERE gm.user.id = :userId")
-    Page<Group> findUserGroups(@Param("userId") Long userId, Pageable pageable);
+    // Preferences for a group are stored on the same chat_user_preferences table as chats,
+    // keyed by -groupId (see MessageServiceImpl.clearChat/deleteChat) so a group's id can never
+    // collide with a real chat's id in that shared chat_id column.
+    @Query("SELECT g FROM Group g JOIN g.members gm LEFT JOIN ChatUserPreference p " +
+           "ON p.chatId = -g.id AND p.user.id = :userId " +
+           "WHERE gm.user.id = :userId AND " +
+           "COALESCE(p.isCleared, false) = false AND COALESCE(p.deleted, false) = false")
+    Page<Group> findUserGroupsExcludingHidden(@Param("userId") Long userId, Pageable pageable);
+
+    @Query("SELECT g FROM Group g JOIN g.members gm JOIN ChatUserPreference p " +
+           "ON p.chatId = -g.id AND p.user.id = :userId " +
+           "WHERE gm.user.id = :userId AND p.isCleared = true")
+    Page<Group> findClearedUserGroups(@Param("userId") Long userId, Pageable pageable);
+
+    @Query("SELECT g FROM Group g JOIN g.members gm JOIN ChatUserPreference p " +
+           "ON p.chatId = -g.id AND p.user.id = :userId " +
+           "WHERE gm.user.id = :userId AND p.deleted = true")
+    Page<Group> findDeletedUserGroups(@Param("userId") Long userId, Pageable pageable);
 
     @Query("SELECT COUNT(gm) FROM GroupMember gm WHERE gm.group.id = :groupId")
     long countMembers(@Param("groupId") Long groupId);

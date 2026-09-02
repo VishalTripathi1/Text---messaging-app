@@ -458,13 +458,19 @@ fun ChatScreen(
                             expanded = showOverflowMenu,
                             onDismissRequest = { showOverflowMenu = false }
                         ) {
-                            DropdownMenuItem(
-                                text = { Text(if (isBlocked) "Unblock" else "Block") },
-                                onClick = {
-                                    viewModel.toggleBlockUser()
-                                    showOverflowMenu = false
-                                }
-                            )
+                            // Blocking is a 1:1 relationship between two users - it has no
+                            // meaning inside a group (you can't "block" a group), so this only
+                            // shows up for real private chats (viewModel.chatId > 0). Groups use
+                            // the negative-chatId convention throughout this screen/ViewModel.
+                            if (viewModel.chatId > 0) {
+                                DropdownMenuItem(
+                                    text = { Text(if (isBlocked) "Unblock" else "Block") },
+                                    onClick = {
+                                        viewModel.toggleBlockUser()
+                                        showOverflowMenu = false
+                                    }
+                                )
+                            }
                             DropdownMenuItem(
                                 text = { Text("Clear chat") },
                                 onClick = {

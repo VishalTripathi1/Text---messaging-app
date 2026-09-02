@@ -39,6 +39,26 @@ public class GroupController {
         return ResponseEntity.ok(groups);
     }
 
+    @GetMapping("/cleared")
+    public ResponseEntity<List<GroupResponse>> getClearedGroups(
+            @AuthenticationPrincipal CustomUserPrincipal principal,
+            @RequestParam(value = "page", defaultValue = "0") int page,
+            @RequestParam(value = "size", defaultValue = "20") int size
+    ) {
+        List<GroupResponse> groups = groupService.getClearedGroups(principal.getId(), page, size);
+        return ResponseEntity.ok(groups);
+    }
+
+    @GetMapping("/deleted")
+    public ResponseEntity<List<GroupResponse>> getDeletedGroups(
+            @AuthenticationPrincipal CustomUserPrincipal principal,
+            @RequestParam(value = "page", defaultValue = "0") int page,
+            @RequestParam(value = "size", defaultValue = "20") int size
+    ) {
+        List<GroupResponse> groups = groupService.getDeletedGroups(principal.getId(), page, size);
+        return ResponseEntity.ok(groups);
+    }
+
     @GetMapping("/{groupId}")
     public ResponseEntity<GroupResponse> getGroupDetails(
             @AuthenticationPrincipal CustomUserPrincipal principal,
