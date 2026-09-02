@@ -185,20 +185,12 @@ public class MessageServiceImpl implements MessageService {
             }
         }
 
-        if (request.getRecipientId() != null && blockedUserRepository.existsByBlockerIdAndBlockedId(request.getRecipientId(), senderId)) {
-            throw new BadRequestException("This user has blocked you");
-        }
-
-        if (request.getChatId() != null) {
-            Chat chat = chatRepository.findById(request.getChatId())
-                    .orElseThrow(() -> new ResourceNotFoundException("Chat not found"));
-            if (chat.getUser1() != null && chat.getUser2() != null) {
-                Long otherUserId = chat.getUser1().getId().equals(senderId) ? chat.getUser2().getId() : chat.getUser1().getId();
-                if (blockedUserRepository.existsByBlockerIdAndBlockedId(otherUserId, senderId)) {
-                    throw new BadRequestException("This user has blocked you");
-                }
-            }
-        }
+        // A message to someone who has blocked you used to be rejected outright (400, nothing
+        // saved) - which is why it rendered with no tick at all rather than the single "sent"
+        // tick it should permanently sit at. It's allowed through now; sendMessage() marks the
+        // recipient's DeliveryStatus as BLOCKED below instead, which - unlike rejecting the
+        // request - keeps behaving correctly even after the recipient unblocks the sender later
+        // (see markChatAsRead/markMessageAsDelivered for why that distinction matters).
 
         // No validation existed at all: empty/blank text messages were accepted and there was
         // no length cap (a client bug or malicious request could store an arbitrarily large
@@ -289,19 +281,33 @@ public class MessageServiceImpl implements MessageService {
         // Generate initial delivery status for recipients
         if (chat != null) {
             User recipient = chat.getUser1().getId().equals(senderId) ? chat.getUser2() : chat.getUser1();
+
+            // If the recipient currently has this sender blocked, mark the row BLOCKED instead
+            // of PENDING right from creation. Unlike gating on isBlocked() at read/delivery time
+            // alone, this stays true forever regardless of a later unblock - markMessageAsDelivered
+            // and markChatAsRead both check for it, so a message sent during a block never
+            // becomes delivered/read even after the block is lifted (deliveredToByMessageId in
+            // mapToMessageResponses only ever matches DELIVERED rows, so this also naturally
+            // keeps rendering as a single "sent" tick with no extra client-side handling needed).
+            boolean recipientHasSenderBlocked = isBlocked(recipient.getId(), senderId);
             deliveryStatusRepository.save(DeliveryStatus.builder()
                     .message(savedMessage)
                     .recipient(recipient)
-                    .status(DeliveryStatus.DeliveryStatusType.PENDING)
+                    .status(recipientHasSenderBlocked
+                            ? DeliveryStatus.DeliveryStatusType.BLOCKED
+                            : DeliveryStatus.DeliveryStatusType.PENDING)
                     .build());
 
             // Archived chats should be silenced, the same way muting works in every other chat
-            // app - previously a push fired unconditionally regardless of archive state.
+            // app - previously a push fired unconditionally regardless of archive state. Blocked
+            // senders are silenced the same way: no notification, no matter what, matching
+            // "I did not get a notification" being the one part of this that already worked -
+            // that only held before because the whole send used to be rejected outright.
             boolean recipientArchivedThisChat = chatUserPreferenceRepository
                     .findByChatIdAndUserId(chat.getId(), recipient.getId())
                     .map(p -> Boolean.TRUE.equals(p.getIsArchived()))
                     .orElse(false);
-            if (!recipientArchivedThisChat) {
+            if (!recipientArchivedThisChat && !recipientHasSenderBlocked) {
                 pushNotificationService.sendPushNotification(
                         recipient.getId(),
                         getUserDisplayName(sender),
@@ -362,22 +368,23 @@ public class MessageServiceImpl implements MessageService {
     }
 
     /**
-     * A new message is exactly the moment a previously cleared/deleted conversation should
-     * become visible again. clearChat()/deleteChat() only ever set a flag - nothing ever reset
-     * it - so a chat or group stayed hidden from the list forever afterward, even once fresh
-     * messages started arriving in it again.
+     * A new message is exactly the moment a previously cleared/deleted chat or group should
+     * become visible in the list again. This only resets the isCleared/deleted flags that decide
+     * list visibility - it deliberately leaves clearedAt/deletedAt untouched. Those timestamps
+     * are the permanent cutoff filterMessagesHiddenByPreference() uses to keep old, cleared
+     * history hidden; resetting them here was a bug in an earlier version of this method - it
+     * wiped the cutoff the moment a single new message arrived, which brought every old
+     * "cleared" message back at once instead of just showing the new one.
      */
     private void revivePreferenceIfHidden(Long chatOrGroupId, Long userId) {
         chatUserPreferenceRepository.findByChatIdAndUserId(chatOrGroupId, userId).ifPresent(preference -> {
             boolean changed = false;
             if (Boolean.TRUE.equals(preference.getIsCleared())) {
                 preference.setIsCleared(false);
-                preference.setClearedAt(null);
                 changed = true;
             }
             if (Boolean.TRUE.equals(preference.getDeleted())) {
                 preference.setDeleted(false);
-                preference.setDeletedAt(null);
                 changed = true;
             }
             if (changed) {
@@ -440,10 +447,20 @@ public class MessageServiceImpl implements MessageService {
         List<Message> unreadMessages = messageRepository.findUnreadMessagesInChat(chatId, userId);
 
         for (Message message : unreadMessages) {
-            // A blocked sender should never learn their message was read (or delivered) - that's
-            // the whole point of blocking someone on WhatsApp/Telegram. Skip generating a read
-            // receipt for anything they sent; it stays showing "sent" only on their end.
-            if (isBlocked(userId, message.getSender().getId())) {
+            // Two separate reasons to skip a read receipt here:
+            // 1. isBlocked(userId, sender) - userId currently has this sender blocked right now,
+            //    e.g. an older message that arrived before the block existed and is still
+            //    unread. Once unblocked, this stops applying and the message can be read
+            //    normally.
+            // 2. The message's own DeliveryStatus was recorded as BLOCKED at send time (see
+            //    sendMessage()) - it was sent *during* a block. That has to stay permanent even
+            //    after unblocking, or the whole point of blocking someone gets undone the moment
+            //    they're unblocked and every message they sent while blocked suddenly reads as
+            //    delivered/seen.
+            if (isBlocked(userId, message.getSender().getId())
+                    || deliveryStatusRepository.findByMessageIdAndRecipientId(message.getId(), userId)
+                            .map(s -> s.getStatus() == DeliveryStatus.DeliveryStatusType.BLOCKED)
+                            .orElse(false)) {
                 continue;
             }
             // The query excludes existing receipts, but retain this guard so concurrent REST

@@ -45,6 +45,10 @@ public class DeliveryStatus {
     private LocalDateTime createdAt;
 
     public enum DeliveryStatusType {
-        PENDING, DELIVERED, FAILED
+        // BLOCKED: recorded when the recipient had the sender blocked at the moment this
+        // message was sent. Deliberately distinct from PENDING - PENDING can still resolve to
+        // DELIVERED once the recipient comes online, but BLOCKED must never progress even after
+        // the recipient later unblocks the sender. See MessageServiceImpl.sendMessage().
+        PENDING, DELIVERED, FAILED, BLOCKED
     }
 }
