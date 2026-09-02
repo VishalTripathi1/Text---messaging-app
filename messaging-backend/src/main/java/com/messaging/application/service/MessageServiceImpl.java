@@ -151,6 +151,21 @@ public class MessageServiceImpl implements MessageService {
                 .blocker(blocker)
                 .blocked(blocked)
                 .build());
+
+        // sendMessage() only marks a message BLOCKED at the moment it's created, by checking
+        // whether the recipient already has the sender blocked. That covers messages sent AFTER
+        // this block, but says nothing about anything targetUserId already sent that's still
+        // sitting there PENDING (blockerId simply hadn't come online/opened the chat yet) -
+        // without this, that older message would deliver and get read completely normally the
+        // next time blockerId reconnects, blocked or not, since nothing else revisits an
+        // already-created PENDING row. Freezing it here, at block time, closes that gap.
+        List<DeliveryStatus> alreadyPending = deliveryStatusRepository.findByRecipientIdAndSenderIdAndStatus(
+                blockerId, targetUserId, DeliveryStatus.DeliveryStatusType.PENDING);
+        for (DeliveryStatus status : alreadyPending) {
+            status.setStatus(DeliveryStatus.DeliveryStatusType.BLOCKED);
+        }
+        deliveryStatusRepository.saveAll(alreadyPending);
+
         return true;
     }
 

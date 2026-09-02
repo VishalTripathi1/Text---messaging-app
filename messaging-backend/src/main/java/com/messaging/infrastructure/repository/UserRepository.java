@@ -36,9 +36,16 @@ public interface UserRepository extends JpaRepository<User, Long> {
     List<User> searchByQuery(@Param("query") String query);
 
     /**
-     * Backs contact sync: matches by exact normalized phone number instead of loading every
-     * user row to filter in Java. Replaces the old findAll()-based fuzzy last-10-digit
-     * comparison; callers normalize numbers to digits-only before calling this.
+     * Backs contact sync. This used to match on the full normalized digit string exactly, which
+     * broke the moment two numbers for the same person had a different country-code prefix -
+     * extremely common in practice, since a phone's saved contact ("9876543210") and what
+     * someone typed in at signup ("+91 9876543210" -> "919876543210") very often don't agree on
+     * whether the country code is included. RIGHT(phone_number, 10) matches on the trailing 10
+     * digits instead (the actual subscriber number), the same approach WhatsApp-style contact
+     * matching uses, so a country-code prefix mismatch on either side no longer hides a real
+     * match. Native query since JPQL has no portable RIGHT()/SUBSTRING-from-the-end equivalent;
+     * this is Postgres-specific, which matches the rest of this project's database.
      */
-    List<User> findByPhoneNumberIn(List<String> phoneNumbers);
+    @Query(value = "SELECT * FROM users WHERE RIGHT(phone_number, 10) IN :phoneSuffixes", nativeQuery = true)
+    List<User> findByPhoneNumberSuffixIn(@Param("phoneSuffixes") List<String> phoneSuffixes);
 }

@@ -36,8 +36,13 @@ public class UserServiceImpl implements UserService {
     @Override
     @Transactional(readOnly = true)
     public List<UserResponse> getAllUsers() {
+        // Unsorted before this - the client just rendered whatever order findAll() /
+        // the sync/search results happened to come back in (effectively insertion order),
+        // which is why the contact list looked shuffled rather than alphabetical.
         return userRepository.findAll().stream()
                 .map(this::mapToUserResponse)
+                .sorted(java.util.Comparator.comparing(
+                        UserResponse::getUsername, String.CASE_INSENSITIVE_ORDER))
                 .collect(Collectors.toList());
     }
 
@@ -46,6 +51,8 @@ public class UserServiceImpl implements UserService {
     public List<UserResponse> searchUsers(String query) {
         return userRepository.searchByQuery(query).stream()
                 .map(this::mapToUserResponse)
+                .sorted(java.util.Comparator.comparing(
+                        UserResponse::getUsername, String.CASE_INSENSITIVE_ORDER))
                 .collect(Collectors.toList());
     }
 
@@ -67,12 +74,19 @@ public class UserServiceImpl implements UserService {
             return List.of();
         }
 
-        // Real indexed lookup instead of loading every user row into memory to filter. Phone
-        // numbers are normalized to digits-only at registration (see AuthServiceImpl), so an
-        // exact match against the normalized input list is correct and fast.
-        return userRepository.findByPhoneNumberIn(normalizedList).stream()
+        // Compare on the trailing 10 digits rather than the full string - see
+        // UserRepository.findByPhoneNumberSuffixIn for why an exact match silently drops real
+        // matches whenever a country code is present on one side and not the other.
+        List<String> suffixes = normalizedList.stream()
+                .map(p -> p.length() > 10 ? p.substring(p.length() - 10) : p)
+                .distinct()
+                .collect(Collectors.toList());
+
+        return userRepository.findByPhoneNumberSuffixIn(suffixes).stream()
                 .filter(u -> !u.getId().equals(currentUserId))
                 .map(this::mapToUserResponse)
+                .sorted(java.util.Comparator.comparing(
+                        UserResponse::getUsername, String.CASE_INSENSITIVE_ORDER))
                 .collect(Collectors.toList());
     }
 

@@ -24,6 +24,20 @@ public interface DeliveryStatusRepository extends JpaRepository<DeliveryStatus, 
     List<DeliveryStatus> findByRecipientIdAndStatus(Long recipientId, DeliveryStatus.DeliveryStatusType status);
 
     /**
+     * A specific sender's still-PENDING messages to recipientId. Used when recipientId blocks
+     * senderId: anything already sent but not yet delivered/read has to be frozen right then,
+     * not just messages sent from that point on - otherwise a message that happened to still be
+     * PENDING (recipient was offline) at block time would deliver/read normally the next time
+     * the recipient reconnects, blocked or not. See MessageServiceImpl.blockUser().
+     */
+    @Query("SELECT ds FROM DeliveryStatus ds WHERE ds.recipient.id = :recipientId " +
+           "AND ds.message.sender.id = :senderId AND ds.status = :status")
+    List<DeliveryStatus> findByRecipientIdAndSenderIdAndStatus(
+            @Param("recipientId") Long recipientId,
+            @Param("senderId") Long senderId,
+            @Param("status") DeliveryStatus.DeliveryStatusType status);
+
+    /**
      * Same query as findByRecipientIdAndStatus but eager-fetches message.sender and
      * message.chat in the same round trip. Previously processPendingDeliveries() looped over
      * the plain (lazy) version and touched status.getMessage().getSender() /
