@@ -10,6 +10,8 @@ sealed class Screen(val route: String) {
     object ChatList : Screen("chat_list")
     object ChatDetail : Screen("chat_detail/{chatId}")
     object GroupDetail : Screen("group_detail/{groupId}")
+    object GroupInfo : Screen("group_info/{groupId}")
+    object ContactInfo : Screen("contact_info/{chatId}")
     object Profile : Screen("profile")
     object Settings : Screen("settings")
     object Search : Screen("search")

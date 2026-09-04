@@ -16,6 +16,8 @@ import com.messaging.presentation.screen.profile.ProfileScreen
 import com.messaging.presentation.screen.settings.SettingsScreen
 import com.messaging.presentation.screen.search.SearchScreen
 import com.messaging.presentation.screen.group.CreateGroupScreen
+import com.messaging.presentation.screen.group.GroupInfoScreen
+import com.messaging.presentation.screen.contact.ContactInfoScreen
 
 import com.messaging.presentation.screen.splash.SplashScreen
 
@@ -110,6 +112,20 @@ fun NavGraph(
                     popUpTo(Screen.GroupDetail.withArgs(groupId.toString())) { inclusive = true }
                 }
             }
+        }
+
+        composable(
+            route = Screen.GroupInfo.route,
+            arguments = listOf(navArgument("groupId") { type = NavType.LongType })
+        ) {
+            GroupInfoScreen(navController = navController)
+        }
+
+        composable(
+            route = Screen.ContactInfo.route,
+            arguments = listOf(navArgument("chatId") { type = NavType.LongType })
+        ) {
+            ContactInfoScreen(navController = navController)
         }
         
         composable(Screen.Profile.route) {

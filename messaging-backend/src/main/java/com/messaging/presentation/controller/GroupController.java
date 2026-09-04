@@ -68,6 +68,16 @@ public class GroupController {
         return ResponseEntity.ok(group);
     }
 
+    @PatchMapping("/{groupId}")
+    public ResponseEntity<GroupResponse> updateGroup(
+            @AuthenticationPrincipal CustomUserPrincipal principal,
+            @PathVariable("groupId") Long groupId,
+            @RequestBody com.messaging.domain.dto.request.GroupUpdateRequest request
+    ) {
+        GroupResponse group = groupService.updateGroup(principal.getId(), groupId, request);
+        return ResponseEntity.ok(group);
+    }
+
     @PostMapping("/{groupId}/members")
     public ResponseEntity<Void> addMembers(
             @AuthenticationPrincipal CustomUserPrincipal principal,

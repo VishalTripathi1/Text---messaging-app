@@ -27,6 +27,12 @@ object AppModule {
         }
     }
 
+    private val MIGRATION_4_5 = object : Migration(4, 5) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL("ALTER TABLE chats ADD COLUMN isBlockedByMe INTEGER NOT NULL DEFAULT 0")
+        }
+    }
+
     @Singleton
     @Provides
     fun provideDatabase(
@@ -36,7 +42,7 @@ object AppModule {
             context,
             MessagingDatabase::class.java,
             "messaging_db"
-        ).addMigrations(MIGRATION_3_4).fallbackToDestructiveMigration().build()
+        ).addMigrations(MIGRATION_3_4, MIGRATION_4_5).fallbackToDestructiveMigration().build()
     }
 
     @Singleton

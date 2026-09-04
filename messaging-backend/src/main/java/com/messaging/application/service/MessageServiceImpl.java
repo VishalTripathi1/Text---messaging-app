@@ -456,10 +456,25 @@ public class MessageServiceImpl implements MessageService {
     @Override
     @Transactional
     public void markChatAsRead(Long userId, Long chatId) {
-        Chat chat = chatRepository.findById(chatId)
-                .orElseThrow(() -> new ResourceNotFoundException("Chat not found"));
-        ensureChatParticipant(chat, userId);
-        List<Message> unreadMessages = messageRepository.findUnreadMessagesInChat(chatId, userId);
+        List<Message> unreadMessages;
+        if (chatId < 0) {
+            // markChatAsRead() never had a group branch at all - chatRepository.findById()
+            // immediately threw "Chat not found" for any negative id, so a group's messages
+            // could never get a ReadReceipt created for them, ever. That's the whole reason group
+            // ticks could never progress past "delivered": the aggregate-across-members check
+            // further down (see mapToMessageResponses) was correctly written, it just never had
+            // any reader data to work with.
+            Long groupId = -chatId;
+            if (groupMemberRepository.findByGroupIdAndUserId(groupId, userId).isEmpty()) {
+                throw new BadRequestException("You are not a member of this group");
+            }
+            unreadMessages = messageRepository.findUnreadMessagesInGroup(groupId, userId);
+        } else {
+            Chat chat = chatRepository.findById(chatId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Chat not found"));
+            ensureChatParticipant(chat, userId);
+            unreadMessages = messageRepository.findUnreadMessagesInChat(chatId, userId);
+        }
 
         for (Message message : unreadMessages) {
             // Two separate reasons to skip a read receipt here:
@@ -636,6 +651,10 @@ public class MessageServiceImpl implements MessageService {
             }
         }
 
+        // One batch lookup instead of an isBlocked() call per chat.
+        java.util.Set<Long> blockedByMe = new java.util.HashSet<>(
+                blockedUserRepository.findBlockedUserIdsByBlockerId(currentUserId));
+
         List<ChatResponse> responses = new java.util.ArrayList<>(chats.size());
         for (Chat chat : chats) {
             User otherUser = otherUserByChatId.get(chat.getId());
@@ -661,6 +680,7 @@ public class MessageServiceImpl implements MessageService {
                     .isArchived(Boolean.TRUE.equals(archivedByChatId.get(chat.getId())))
                     .isCleared(Boolean.TRUE.equals(clearedByChatId.get(chat.getId())))
                     .isDeleted(Boolean.TRUE.equals(deletedByChatId.get(chat.getId())))
+                    .isBlockedByMe(blockedByMe.contains(otherUser.getId()))
                     .unreadCount(unreadByChatId.getOrDefault(chat.getId(), 0))
                     .build());
         }

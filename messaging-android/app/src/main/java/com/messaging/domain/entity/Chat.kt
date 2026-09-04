@@ -15,5 +15,6 @@ data class Chat(
     val unreadCount: Int,
     val isGroup: Boolean = false,
     val groupName: String? = null,
-    val groupDescription: String? = null
+    val groupDescription: String? = null,
+    val isBlockedByMe: Boolean = false
 )

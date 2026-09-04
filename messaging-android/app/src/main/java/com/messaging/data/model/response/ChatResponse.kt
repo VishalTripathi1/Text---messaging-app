@@ -9,5 +9,6 @@ data class ChatResponse(
     val lastMessage: MessageResponse?,
     val isPinned: Boolean,
     val isArchived: Boolean,
+    val isBlockedByMe: Boolean = false,
     val unreadCount: Int
 )

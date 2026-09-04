@@ -441,14 +441,15 @@ class ChatRepositoryImpl @Inject constructor(
             val httpResp = chatApiService.sendHttpMessage(wsRequest)
             if (httpResp.isSuccessful && httpResp.body() != null) {
                 val messageResp = httpResp.body()!!
-                messageDao.deleteMessageById(newTempMessageId)
                 // keepBestStatus, not the response's status outright: the DELIVERY_STATUS frame for
                 // this very message is usually applied before this line runs, and this response is
-                // the older of the two answers. See keepBestStatus().
+                // the older of the two answers. See keepBestStatus(). It reads by messageResp's real
+                // server id, so it's unaffected by whether the temp row below has been swapped out
+                // yet - safe to compute before replaceMessage() runs.
                 val stored = keepBestStatus(
                     messageResp.toEntity(messageResp.deliveryStatus ?: "SENT")
                 )
-                messageDao.insertMessage(stored)
+                messageDao.replaceMessage(newTempMessageId, stored)
 
                 val confirmedChatId = if (actualGroupId != null) -actualGroupId else actualChatId
                 if (confirmedChatId != null) {
@@ -739,13 +740,16 @@ class ChatRepositoryImpl @Inject constructor(
                     val deliveryStatus = if (isOutgoing) (response.deliveryStatus ?: "SENT") else "READ"
                     
                     val groupId = response.groupId
-                    if (isOutgoing && wsMessage.type == "CHAT_MESSAGE") {
-                        if (groupId != null) {
-                            messageDao.deletePendingMessagesForGroup(groupId)
-                        } else if (response.chatId != null) {
-                            messageDao.deletePendingMessagesForChat(response.chatId)
-                        }
-                    }
+                    // deletePendingMessagesForGroup/Chat used to run right here, separately from
+                    // the insertMessage() call below - two independent writes, each triggering its
+                    // own emission from the Flow query the chat screen observes. That's the other
+                    // half of the same "sent message disappears, then comes back" bug fixed in
+                    // sendMessage(): this WS echo usually arrives before or around the same time as
+                    // that HTTP response, wiping every pending temp row in the chat and leaving a
+                    // visible gap until the insert below caught up. The read of existingRow just
+                    // below is keyed on response.id (the real server id), so it's unaffected by
+                    // whether the temp rows have been cleared yet - safe to defer the delete down
+                    // to right before the insert and run both as one atomic transaction.
 
                     // Message and reaction updates use dedicated event types. REPLACE-on-insert
                     // applies them locally without turning an edit of an old message into a new
@@ -769,7 +773,17 @@ class ChatRepositoryImpl @Inject constructor(
                             existingRow.messageText != response.messageText
 
                     val entity = keepBestStatus(response.toEntity(deliveryStatus))
-                    messageDao.insertMessage(entity)
+                    if (isOutgoing && wsMessage.type == "CHAT_MESSAGE") {
+                        if (groupId != null) {
+                            messageDao.replacePendingWithConfirmedForGroup(groupId, entity)
+                        } else if (response.chatId != null) {
+                            messageDao.replacePendingWithConfirmedForChat(response.chatId, entity)
+                        } else {
+                            messageDao.insertMessage(entity)
+                        }
+                    } else {
+                        messageDao.insertMessage(entity)
+                    }
 
                     val resolvedChatId = if (groupId != null) -groupId else response.chatId
                     if (resolvedChatId != null) {
@@ -782,26 +796,46 @@ class ChatRepositoryImpl @Inject constructor(
                                     chat = groupDetails.toEntity()
                                     chatDao.insertChat(chat)
                                 } else {
-                                    chat = ChatEntity(
-                                        id = resolvedChatId,
-                                        otherUserId = null,
-                                        otherUsername = null,
-                                        otherDisplayName = null,
-                                        otherBio = null,
-                                        otherProfilePictureUrl = null,
-                                        otherStatus = null,
-                                        lastMessageText = response.messageText,
-                                        lastMessageSenderId = response.senderId,
-                                        lastMessageStatus = response.deliveryStatus,
-                                        lastMessageAt = response.createdAt.toEpochMillis(),
-                                        isPinned = false,
-                                        isArchived = false,
-                                        unreadCount = 1,
-                                        isGroup = true,
-                                        groupName = "Group Chat",
-                                        groupDescription = ""
-                                    )
-                                    chatDao.insertChat(chat)
+                                    // getGroupDetails() can fail transiently right after being
+                                    // added to a group (e.g. this device's membership row
+                                    // committing a moment after the very first message's WS
+                                    // broadcast reaches it). This used to fall back to a literal
+                                    // "Group Chat" placeholder as the group's actual name and
+                                    // insert it as a real row - nothing ever corrected it
+                                    // afterward unless something else happened to overwrite this
+                                    // exact row, which is why it could stick around indefinitely.
+                                    // syncChats() re-fetches every group from
+                                    // getUserGroups() with its real name, the same fallback the
+                                    // private-chat branch below already uses for the equivalent
+                                    // situation.
+                                    syncChats()
+                                    chat = chatDao.getChatById(resolvedChatId)
+                                    if (chat == null) {
+                                        // Sync itself failed too (e.g. no network) - better to
+                                        // show a clearly-temporary placeholder than a permanent,
+                                        // wrong one; the next successful syncChats() will replace
+                                        // this row entirely rather than merge into it.
+                                        chat = ChatEntity(
+                                            id = resolvedChatId,
+                                            otherUserId = null,
+                                            otherUsername = null,
+                                            otherDisplayName = null,
+                                            otherBio = null,
+                                            otherProfilePictureUrl = null,
+                                            otherStatus = null,
+                                            lastMessageText = response.messageText,
+                                            lastMessageSenderId = response.senderId,
+                                            lastMessageStatus = response.deliveryStatus,
+                                            lastMessageAt = response.createdAt.toEpochMillis(),
+                                            isPinned = false,
+                                            isArchived = false,
+                                            unreadCount = 1,
+                                            isGroup = true,
+                                            groupName = "Loading group...",
+                                            groupDescription = ""
+                                        )
+                                        chatDao.insertChat(chat)
+                                    }
                                 }
                             } else {
                                 syncChats()
@@ -1016,6 +1050,25 @@ class ChatRepositoryImpl @Inject constructor(
             val response = chatApiService.getGroupDetails(groupId)
             response.body()?.takeIf { response.isSuccessful }
                 ?: throw Exception(parseErrorMessage(response, "Failed to load group details"))
+        }
+    }
+
+    override suspend fun updateGroup(groupId: Long, groupName: String?, description: String?): Result<com.messaging.data.model.response.GroupResponse> = withContext(Dispatchers.IO) {
+        runCatching {
+            val response = chatApiService.updateGroup(
+                groupId,
+                com.messaging.data.model.request.GroupUpdateRequest(groupName = groupName, description = description)
+            )
+            val body = response.body()?.takeIf { response.isSuccessful }
+                ?: throw Exception(parseErrorMessage(response, "Failed to update group"))
+            // Rename should show up on the chat list/open conversation immediately rather than
+            // waiting for the next syncChats() - the same reasoning as the optimistic update in
+            // sendMessage().
+            val existing = chatDao.getChatById(-groupId)
+            if (existing != null) {
+                chatDao.insertChat(existing.copy(groupName = body.groupName, groupDescription = body.description))
+            }
+            body
         }
     }
 

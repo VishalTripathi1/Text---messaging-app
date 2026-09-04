@@ -7,7 +7,6 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
@@ -45,11 +44,14 @@ class MessagingFirebaseService : FirebaseMessagingService() {
     }
 
     private fun registerTokenOnBackend(token: String) {
-        val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown_android"
         val deviceName = Build.MODEL
         val osVersion = Build.VERSION.RELEASE
         
         serviceScope.launch {
+            // Same stable id as login (TokenManager.getOrCreateDeviceId) - see the comment on
+            // that function for why ANDROID_ID here and a login-time UUID disagreeing with each
+            // other caused sessions to look inconsistent across the app's own device-facing calls.
+            val deviceId = tokenManager.getOrCreateDeviceId()
             chatRepository.registerDevice(
                 deviceId = deviceId,
                 deviceName = deviceName,

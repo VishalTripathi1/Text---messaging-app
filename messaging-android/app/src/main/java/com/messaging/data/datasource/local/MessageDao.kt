@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -34,6 +35,24 @@ interface MessageDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun insertMessage(message: MessageEntity)
+
+    /**
+     * Swaps the optimistic temp row (negative id) for the server-confirmed one atomically.
+     *
+     * Previously the caller did deleteMessageById() then insertMessage() as two separate calls.
+     * getMessagesForChatFlow() is a Room Flow query, which re-emits on every write it observes -
+     * the delete alone was enough to trigger an emission with the message momentarily missing
+     * from the list, and the following insert triggered a second emission bringing it back. On a
+     * slower recomposition/frame, that showed up exactly as "the sent message disappears, then
+     * comes back" even though nothing was ever actually lost from the database. @Transaction
+     * makes Room treat both writes as one unit, so observers only ever see the before/after
+     * states, never the momentary "deleted" gap in between.
+     */
+    @Transaction
+    suspend fun replaceMessage(tempId: Long, newEntity: MessageEntity) {
+        deleteMessageById(tempId)
+        insertMessage(newEntity)
+    }
 
     @Query("UPDATE messages SET deliveryStatus = :status WHERE id = :messageId")
     fun updateDeliveryStatus(messageId: Long, status: String)
@@ -76,6 +95,23 @@ interface MessageDao {
 
     @Query("DELETE FROM messages WHERE groupId = :groupId AND id < 0 AND deliveryStatus = 'PENDING'")
     fun deletePendingMessagesForGroup(groupId: Long)
+
+    /**
+     * Same reasoning as replaceMessage() above, for the WebSocket echo path: this used to run
+     * deletePendingMessagesForChat/Group() and insertMessage() as two separate calls, which could
+     * leave the chat's Flow observers seeing the message missing for a moment between the two.
+     */
+    @Transaction
+    suspend fun replacePendingWithConfirmedForChat(chatId: Long, newEntity: MessageEntity) {
+        deletePendingMessagesForChat(chatId)
+        insertMessage(newEntity)
+    }
+
+    @Transaction
+    suspend fun replacePendingWithConfirmedForGroup(groupId: Long, newEntity: MessageEntity) {
+        deletePendingMessagesForGroup(groupId)
+        insertMessage(newEntity)
+    }
 
     @Query("SELECT * FROM messages WHERE chatId = :chatId AND id < 0 ORDER BY createdAt ASC LIMIT 1")
     fun getOldestPendingMessageForChat(chatId: Long): MessageEntity?

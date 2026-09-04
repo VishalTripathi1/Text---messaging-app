@@ -40,6 +40,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -240,9 +241,7 @@ fun ChatScreen(
     // Staged attachment: picking a file no longer sends it immediately. Instead it's held here
     // so the user can review it - and remove it via the "x" button - before it's actually sent.
     var pendingAttachment by remember { mutableStateOf<PendingAttachment?>(null) }
-    var showChatDetails by remember { mutableStateOf(false) }
     var showLargeProfilePhoto by remember { mutableStateOf(false) }
-    var showGroupMembers by remember { mutableStateOf(false) }
     var isRecording by remember { mutableStateOf(false) }
     var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
     var recordingFile by remember { mutableStateOf<File?>(null) }
@@ -374,6 +373,19 @@ fun ChatScreen(
         }
     }
 
+    // Just tapping the text field (no new message, textState may still be blank) used to leave
+    // the list exactly where it was - the keyboard then opened on top of the last few messages
+    // instead of the list making room and scrolling the latest one into view above it. This
+    // watches the IME's own reported height rather than any focus callback, so it reacts the same
+    // way regardless of what triggered the keyboard (tapping the field, an emoji picker, etc.).
+    val imeBottomPx = WindowInsets.ime.getBottom(LocalDensity.current)
+    val isImeVisible = imeBottomPx > 0
+    LaunchedEffect(isImeVisible) {
+        if (isImeVisible && filteredMessages.isNotEmpty()) {
+            listState.animateScrollToItem(filteredMessages.size - 1)
+        }
+    }
+
     // Send a single start event when typing begins, then a single stop event only after two
     // seconds of inactivity. This avoids every keystroke racing a delayed stop event.
     LaunchedEffect(textState.isNotBlank()) {
@@ -405,7 +417,22 @@ fun ChatScreen(
                         )
                     } else {
                         Row(
-                            modifier = Modifier.clickable { showChatDetails = true },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .fillMaxHeight()
+                                .clickable {
+                                    if (viewModel.chatId > 0) {
+                                        navController.navigate(
+                                            com.messaging.presentation.navigation.Screen.ContactInfo
+                                                .withArgs(viewModel.chatId.toString())
+                                        )
+                                    } else {
+                                        navController.navigate(
+                                            com.messaging.presentation.navigation.Screen.GroupInfo
+                                                .withArgs((-viewModel.chatId).toString())
+                                        )
+                                    }
+                                },
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Box(modifier = Modifier.clickable { showLargeProfilePhoto = true }) {
@@ -470,6 +497,19 @@ fun ChatScreen(
                                         showOverflowMenu = false
                                     }
                                 )
+                            } else {
+                                // -chatId recovers the real groupId, matching the convention
+                                // used throughout this screen/ViewModel for group operations.
+                                DropdownMenuItem(
+                                    text = { Text("Group info") },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        navController.navigate(
+                                            com.messaging.presentation.navigation.Screen.GroupInfo
+                                                .withArgs((-viewModel.chatId).toString())
+                                        )
+                                    }
+                                )
                             }
                             DropdownMenuItem(
                                 text = { Text("Clear chat") },
@@ -511,8 +551,7 @@ fun ChatScreen(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp)
-                    .imePadding(),
+                    .padding(horizontal = 12.dp),
                 contentPadding = PaddingValues(top = 12.dp, bottom = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -686,55 +725,6 @@ fun ChatScreen(
                 }
             }
         }
-    }
-
-    if (showChatDetails) {
-        AlertDialog(
-            onDismissRequest = { showChatDetails = false },
-            title = { Text(otherUserDisplayName) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Status: ${otherUserStatus.lowercase(Locale.ROOT)}")
-                    if (otherUserUsername.isNotBlank()) Text("Username: @$otherUserUsername")
-                    if (!otherUserBio.isNullOrBlank()) Text(otherUserBio ?: "")
-                    if (viewModel.chatId < 0) {
-                        Text("${groupDetails?.memberCount ?: 0} members")
-                        TextButton(onClick = { showGroupMembers = true }) {
-                            Icon(Icons.Default.Group, contentDescription = null)
-                            Spacer(Modifier.width(6.dp))
-                            Text("Manage members")
-                        }
-                    }
-                }
-            },
-            confirmButton = { TextButton(onClick = { showChatDetails = false }) { Text("Close") } }
-        )
-    }
-
-    if (showGroupMembers) {
-        AlertDialog(
-            onDismissRequest = { showGroupMembers = false },
-            title = { Text("Group members") },
-            text = {
-                Column(modifier = Modifier.heightIn(max = 360.dp)) {
-                    groupDetails?.members.orEmpty().forEach { member ->
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                            Text(member.displayName, modifier = Modifier.weight(1f))
-                            TextButton(onClick = { viewModel.removeGroupMember(member.id) }) { Text("Remove") }
-                        }
-                    }
-                    Text("Add people", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp))
-                    groupContacts.filter { contact -> groupDetails?.members?.none { it.id == contact.id } != false }
-                        .take(8)
-                        .forEach { contact ->
-                            TextButton(onClick = { viewModel.addGroupMembers(listOf(contact.id)) }) {
-                                Text("+ ${contact.displayName}")
-                            }
-                        }
-                }
-            },
-            confirmButton = { TextButton(onClick = { showGroupMembers = false }) { Text("Done") } }
-        )
     }
 
     val largeProfilePhotoUrl = otherUserProfilePictureUrl?.takeIf { it.isNotBlank() }

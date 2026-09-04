@@ -1,6 +1,8 @@
 package com.messaging.application.service;
 
 import com.messaging.domain.dto.request.GroupCreateRequest;
+import com.messaging.domain.dto.request.GroupUpdateRequest;
+import com.messaging.domain.dto.response.GroupMemberResponse;
 import com.messaging.domain.dto.response.GroupResponse;
 import com.messaging.domain.dto.response.UserResponse;
 import com.messaging.domain.entity.ChatUserPreference;
@@ -166,6 +168,9 @@ public class GroupServiceImpl implements GroupService {
         // MessageServiceImpl for why the id is negated.
         Optional<ChatUserPreference> preference =
                 chatUserPreferenceRepository.findByChatIdAndUserId(-group.getId(), userId);
+        List<GroupMember> members = group.getMembers() == null ? List.of() : group.getMembers();
+        boolean viewerIsAdmin = members.stream()
+                .anyMatch(m -> m.getUser().getId().equals(userId) && m.getRole() == GroupMember.MemberRole.ADMIN);
         return GroupResponse.builder()
                 .id(group.getId())
                 .groupName(group.getGroupName())
@@ -174,14 +179,40 @@ public class GroupServiceImpl implements GroupService {
                 .createdByUserId(group.getCreatedBy() != null ? group.getCreatedBy().getId() : null)
                 .createdAt(group.getCreatedAt())
                 .memberCount(memberCount)
+                .isAdmin(viewerIsAdmin)
                 .isCleared(preference.map(p -> Boolean.TRUE.equals(p.getIsCleared())).orElse(false))
                 .isDeleted(preference.map(p -> Boolean.TRUE.equals(p.getDeleted())).orElse(false))
-                .members(group.getMembers() == null ? List.of() : group.getMembers().stream().map(member -> UserResponse.builder()
-                    .id(member.getUser().getId())
-                    .username(member.getUser().getUsername())
-                    .email(member.getUser().getEmail())
-                    .displayName(member.getUser().getUsername())
+                .members(members.stream().map(member -> GroupMemberResponse.builder()
+                    .user(UserResponse.builder()
+                        .id(member.getUser().getId())
+                        .username(member.getUser().getUsername())
+                        .email(member.getUser().getEmail())
+                        .displayName(member.getUser().getUsername())
+                        .build())
+                    .isAdmin(member.getRole() == GroupMember.MemberRole.ADMIN)
                     .build()).collect(Collectors.toList()))
                 .build();
+    }
+
+    @Override
+    @Transactional
+    public GroupResponse updateGroup(Long requesterId, Long groupId, GroupUpdateRequest request) {
+        Group group = groupRepository.findById(groupId)
+                .orElseThrow(() -> new ResourceNotFoundException("Group not found"));
+        GroupMember requesterMembership = requireMember(groupId, requesterId);
+        if (requesterMembership.getRole() != GroupMember.MemberRole.ADMIN) {
+            throw new BadRequestException("Only group admins can edit this group");
+        }
+        if (request.getGroupName() != null) {
+            if (request.getGroupName().isBlank()) {
+                throw new BadRequestException("Group name cannot be empty");
+            }
+            group.setGroupName(request.getGroupName().trim());
+        }
+        if (request.getDescription() != null) {
+            group.setDescription(request.getDescription());
+        }
+        Group saved = groupRepository.save(group);
+        return mapToResponse(saved, requesterId);
     }
 }

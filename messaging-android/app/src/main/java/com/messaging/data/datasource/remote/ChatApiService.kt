@@ -83,6 +83,12 @@ interface ChatApiService {
         @Path("groupId") groupId: Long
     ): Response<GroupResponse>
 
+    @PATCH("v1/groups/{groupId}")
+    suspend fun updateGroup(
+        @Path("groupId") groupId: Long,
+        @Body request: com.messaging.data.model.request.GroupUpdateRequest
+    ): Response<GroupResponse>
+
     @POST("v1/groups/{groupId}/members")
     suspend fun addGroupMembers(
         @Path("groupId") groupId: Long,

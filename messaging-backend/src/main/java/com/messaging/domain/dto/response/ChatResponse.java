@@ -20,5 +20,9 @@ public class ChatResponse {
     private Boolean isArchived;
     private Boolean isCleared;
     private Boolean isDeleted;
+    // Whether the viewer has blocked the other participant - distinct from being blocked BY
+    // them. Only ever true/relevant for the viewer's own outgoing block action; matches the
+    // "You blocked this user" placeholder ChatScreen already shows inside an open conversation.
+    private Boolean isBlockedByMe;
     private Integer unreadCount;
 }

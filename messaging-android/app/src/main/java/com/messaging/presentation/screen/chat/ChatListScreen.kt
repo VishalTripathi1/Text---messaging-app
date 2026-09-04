@@ -24,6 +24,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -327,6 +328,21 @@ fun ChatItem(
                         modifier = Modifier.weight(1f),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        if (chat.isBlockedByMe) {
+                            // Matches the "You blocked this user" placeholder already shown
+                            // inside the open conversation (ChatScreen) - the list row used to
+                            // just keep showing the last real message and its tick as if nothing
+                            // had changed, which is misleading once you can no longer actually
+                            // exchange messages here.
+                            Text(
+                                text = "You blocked this user",
+                                fontSize = 14.sp,
+                                fontStyle = FontStyle.Italic,
+                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        } else {
                         val isOwnLastMessage = chat.lastMessageSenderId == currentUserId && currentUserId > 0
                         if (isOwnLastMessage && !chat.lastMessageText.isNullOrBlank() && chat.lastMessageStatus != null) {
                             val status = chat.lastMessageStatus ?: "SENT"
@@ -378,6 +394,7 @@ fun ChatItem(
                             overflow = TextOverflow.Ellipsis,
                             fontWeight = if (chat.unreadCount > 0) FontWeight.Medium else FontWeight.Normal
                         )
+                        }
                     }
 
                     if (chat.unreadCount > 0) {

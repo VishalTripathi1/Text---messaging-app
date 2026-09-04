@@ -7,7 +7,9 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
+import java.util.UUID
 
 private val Context.dataStore by preferencesDataStore(name = "auth_prefs")
 
@@ -25,6 +27,7 @@ class TokenManager(private val context: Context) {
         private val NOTIFICATIONS_ENABLED_KEY = booleanPreferencesKey("notifications_enabled")
         private val SOUND_ENABLED_KEY = booleanPreferencesKey("sound_enabled")
         private val VIBRATION_ENABLED_KEY = booleanPreferencesKey("vibration_enabled")
+        private val DEVICE_ID_KEY = stringPreferencesKey("device_id")
     }
 
     suspend fun saveTokens(accessToken: String, refreshToken: String, userId: Long, username: String) {
@@ -92,6 +95,32 @@ class TokenManager(private val context: Context) {
 
     val vibrationEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
         preferences[VIBRATION_ENABLED_KEY] ?: true
+    }
+
+    /**
+     * A UUID generated once on first call and persisted forever after, so every part of the app
+     * agrees on this install's identity.
+     *
+     * Before this, three different places each computed their own "device id": LoginViewModel
+     * generated a brand new random UUID on every single login (so this same physical install
+     * could never resume or reuse its previous login's Device/Session row on the backend - every
+     * login looked like a new device), while MainActivity and MessagingFirebaseService instead
+     * used Settings.Secure.ANDROID_ID. Since login's device id never matched what those other two
+     * flows sent, the backend ended up with several unrelated Device rows for what was actually
+     * one physical install, and session/refresh-token lookups tied to the wrong one of those
+     * rows could fail with "Active session not found for refresh token" even though the install
+     * itself never logged out.
+     */
+    suspend fun getOrCreateDeviceId(): String {
+        val existing = context.dataStore.data.map { it[DEVICE_ID_KEY] }.firstOrNull()
+        if (!existing.isNullOrBlank()) {
+            return existing
+        }
+        val newId = UUID.randomUUID().toString()
+        context.dataStore.edit { preferences ->
+            preferences[DEVICE_ID_KEY] = newId
+        }
+        return newId
     }
 
     suspend fun clearTokens() {

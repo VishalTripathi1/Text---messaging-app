@@ -4,12 +4,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.messaging.data.model.request.LoginRequest
 import com.messaging.domain.usecase.LoginUseCase
+import com.messaging.util.TokenManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import java.util.UUID
 import javax.inject.Inject
 
 /**
@@ -17,7 +17,8 @@ import javax.inject.Inject
  */
 @HiltViewModel
 class LoginViewModel @Inject constructor(
-    private val loginUseCase: LoginUseCase
+    private val loginUseCase: LoginUseCase,
+    private val tokenManager: TokenManager
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow<AuthUiState>(AuthUiState.Idle)
@@ -32,8 +33,10 @@ class LoginViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.value = AuthUiState.Loading
             
-            // We use a generated UUID as a unique device identifier for tracking sessions
-            val deviceId = UUID.randomUUID().toString()
+            // Stable per-install id (see TokenManager.getOrCreateDeviceId) - not a fresh UUID
+            // per login, so this same install resumes/reuses its own Device+Session on the
+            // backend instead of registering as a new device every time someone logs in.
+            val deviceId = tokenManager.getOrCreateDeviceId()
             val request = LoginRequest(
                 username = username,
                 password = password,

@@ -73,7 +73,7 @@ fun ChatEntity.toDomain(): Chat {
             email = "",
             displayName = otherDisplayName ?: "",
             profilePictureUrl = otherProfilePictureUrl,
-            bio = null,
+            bio = otherBio,
             status = otherStatus ?: "OFFLINE",
             lastSeen = null
         )
@@ -90,7 +90,8 @@ fun ChatEntity.toDomain(): Chat {
         unreadCount = unreadCount,
         isGroup = isGroup,
         groupName = groupName,
-        groupDescription = groupDescription
+        groupDescription = groupDescription,
+        isBlockedByMe = isBlockedByMe
     )
 }
 
@@ -149,6 +150,7 @@ fun ChatResponse.toEntity(): ChatEntity {
         lastMessageAt = lastMessage?.createdAt?.toEpochMillis(),
         isPinned = isPinned ?: false,
         isArchived = isArchived ?: false,
+        isBlockedByMe = isBlockedByMe,
         unreadCount = unreadCount ?: 0,
         isGroup = isGroupChat,
         groupName = null,

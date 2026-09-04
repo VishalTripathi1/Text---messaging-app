@@ -22,7 +22,11 @@ public class GroupResponse {
     private Long createdByUserId;
     private LocalDateTime createdAt;
     private long memberCount;
-    private List<UserResponse> members;
+    private List<GroupMemberResponse> members;
+    // Whether the requesting user themselves is an admin of this group - lets the client decide
+    // whether to show rename/remove-others controls without having to search the members list
+    // for its own id.
+    private boolean isAdmin;
     private boolean isCleared;
     private boolean isDeleted;
 }

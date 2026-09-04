@@ -3,7 +3,6 @@ package com.messaging
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.lifecycle.lifecycleScope
@@ -118,11 +117,15 @@ class MainActivity : ComponentActivity() {
                 val token = task.result
                 Timber.d("FCM Token: $token")
                 
-                val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown_android"
                 val deviceName = Build.MODEL
                 val osVersion = Build.VERSION.RELEASE
                 
                 lifecycleScope.launch {
+                    // Same stable id as login (TokenManager.getOrCreateDeviceId), not
+                    // ANDROID_ID - registerDevice() and login() used to disagree on what "this
+                    // device" was, which meant this call created/matched a *different* Device
+                    // row on the backend than the one the current session was actually tied to.
+                    val deviceId = tokenManager.getOrCreateDeviceId()
                     chatRepository.registerDevice(
                         deviceId = deviceId,
                         deviceName = deviceName,

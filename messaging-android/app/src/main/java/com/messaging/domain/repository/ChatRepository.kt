@@ -51,6 +51,7 @@ interface ChatRepository {
     
     suspend fun syncGroupMessages(groupId: Long): Result<Unit>
     suspend fun getGroupDetails(groupId: Long): Result<com.messaging.data.model.response.GroupResponse>
+    suspend fun updateGroup(groupId: Long, groupName: String?, description: String?): Result<com.messaging.data.model.response.GroupResponse>
     suspend fun addGroupMembers(groupId: Long, userIds: List<Long>): Result<Unit>
     suspend fun removeGroupMember(groupId: Long, userId: Long): Result<Unit>
 

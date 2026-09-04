@@ -15,6 +15,8 @@ public interface GroupService {
     List<GroupResponse> getClearedGroups(Long userId, int page, int size);
 
     List<GroupResponse> getDeletedGroups(Long userId, int page, int size);
+
+    GroupResponse updateGroup(Long requesterId, Long groupId, com.messaging.domain.dto.request.GroupUpdateRequest request);
     
     GroupResponse getGroupDetails(Long requesterId, Long groupId);
     
