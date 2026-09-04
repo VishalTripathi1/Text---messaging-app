@@ -79,7 +79,7 @@ fun ContactInfoScreen(
                 )
             }
 
-            HorizontalDivider()
+            Divider()
 
             Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
                 if (user.username.isNotBlank()) {
@@ -94,7 +94,7 @@ fun ContactInfoScreen(
                 }
             }
 
-            HorizontalDivider()
+            Divider()
 
             Row(
                 modifier = Modifier

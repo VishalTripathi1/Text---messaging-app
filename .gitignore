@@ -36,6 +36,10 @@ messaging-android/app/google-services.json
 .env
 .env.local
 
+# The blanket *.jar rule above would otherwise silently exclude this - it must be committed,
+# or anyone who clones the repo gets a broken ./gradlew with no way to run Gradle at all.
+!messaging-android/gradle/wrapper/gradle-wrapper.jar
+
 # IDE
 .vscode/
 *.sublime-project

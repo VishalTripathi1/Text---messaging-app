@@ -114,7 +114,7 @@ fun GroupInfoScreen(
                     }
                 }
 
-                HorizontalDivider()
+                Divider()
 
                 // Members header + add button
                 Row(
@@ -197,7 +197,7 @@ fun GroupInfoScreen(
                     }
                 }
 
-                HorizontalDivider()
+                Divider()
 
                 Row(
                     modifier = Modifier
