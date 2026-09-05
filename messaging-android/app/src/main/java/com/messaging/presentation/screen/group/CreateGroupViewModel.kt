@@ -80,6 +80,12 @@ class CreateGroupViewModel @Inject constructor(
             _error.value = "Group name cannot be empty"
             return
         }
+        if (members.size < 2) {
+            // Mirrors GroupServiceImpl.createGroup()'s server-side check - catching it here
+            // means an immediate, clear message instead of a round-trip just to find out.
+            _error.value = "Select at least 2 other members to create a group"
+            return
+        }
 
         viewModelScope.launch {
             _isCreating.value = true

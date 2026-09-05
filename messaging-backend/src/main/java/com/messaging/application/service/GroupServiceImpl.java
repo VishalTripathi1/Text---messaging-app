@@ -43,6 +43,18 @@ public class GroupServiceImpl implements GroupService {
         User creator = userRepository.findById(creatorId)
                 .orElseThrow(() -> new ResourceNotFoundException("Creator user not found"));
 
+        // A "group" of just the creator isn't a group - nothing enforced this before, so you
+        // could create one with zero other members. Members can still be removed down to 2
+        // total afterward (removeMember() has no floor), this only guards creation itself.
+        java.util.Set<Long> distinctOtherMemberIds = request.getMemberUserIds() == null
+                ? java.util.Set.of()
+                : request.getMemberUserIds().stream()
+                        .filter(id -> id != null && !id.equals(creatorId))
+                        .collect(Collectors.toSet());
+        if (distinctOtherMemberIds.size() < 2) {
+            throw new BadRequestException("A group needs at least 2 other members besides yourself");
+        }
+
         Group group = Group.builder()
                 .groupName(request.getGroupName())
                 .description(request.getDescription())

@@ -218,6 +218,7 @@ fun ChatScreen(
                     viewModel.syncMessages()
                     viewModel.markAsRead()
                     viewModel.onScreenVisible()
+                    viewModel.refreshBlockStatus()
                 }
                 Lifecycle.Event.ON_PAUSE -> viewModel.onScreenHidden()
                 else -> {}

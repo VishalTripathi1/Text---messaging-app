@@ -447,6 +447,20 @@ class ChatViewModel @Inject constructor(
     private val _isBlocked = MutableStateFlow(false)
     val isBlocked: StateFlow<Boolean> = _isBlocked
 
+    /**
+     * ContactInfoScreen has its own separate ViewModel and its own separate isBlocked state -
+     * toggling block/unblock there never touched this ViewModel's _isBlocked at all, so
+     * navigating back to an already-open ChatScreen kept showing the old block state in the
+     * overflow menu (and kept the message input enabled/disabled incorrectly) until the whole
+     * screen was recreated from scratch. Call this whenever the chat screen resumes.
+     */
+    fun refreshBlockStatus() {
+        viewModelScope.launch {
+            val targetId = otherUserId ?: return@launch
+            chatRepository.isUserBlocked(targetId).onSuccess { _isBlocked.value = it }
+        }
+    }
+
     fun toggleBlockUser() {
         viewModelScope.launch {
             val targetId = otherUserId ?: return@launch

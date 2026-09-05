@@ -71,6 +71,27 @@ fun GroupInfoScreen(
             Box(modifier = Modifier.fillMaxSize().padding(paddingValues), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
+        } else if (currentGroup == null) {
+            // Previously this branch didn't exist at all - if getGroupDetails() failed for any
+            // reason (network hiccup, backend not yet redeployed with the new response shape,
+            // permission issue), the screen just stayed permanently blank with isLoading=false
+            // and group=null, no error text, no retry - nothing to tell the person anything went
+            // wrong or let them try again without leaving the screen.
+            Column(
+                modifier = Modifier.fillMaxSize().padding(paddingValues).padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = error ?: "Couldn't load this group.",
+                    color = MaterialTheme.colorScheme.error,
+                    fontSize = 15.sp
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Button(onClick = { viewModel.loadGroup() }) {
+                    Text("Retry")
+                }
+            }
         } else if (currentGroup != null) {
             Column(
                 modifier = Modifier
